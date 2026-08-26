@@ -1,0 +1,5 @@
+# Optional, self-hosted speech-to-text for Zenny voice turns.
+# Install after the base requirements: pip install -r requirements-voice.txt
+# The configured Whisper model downloads once on first transcription and is then
+# cached on the backend machine. No model runs in the Expo app.
+faster-whisper==1.1.1

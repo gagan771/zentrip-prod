@@ -1,0 +1,60 @@
+{
+  "expo": {
+    "name": "Zentrip",
+    "slug": "zentrip-mobile",
+    "scheme": "zentrip",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "experiments": {
+      "typedRoutes": true
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "social.zentrip.mobile"
+    },
+    "android": {
+      "package": "social.zentrip.mobile",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Zentrip uses your microphone so you can talk to the Companion and use live translation."
+        }
+      ],
+      "expo-web-browser",
+      "expo-sqlite",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Zentrip uses your camera to identify landmarks and translate menus or signs."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Zentrip uses your location to build your itinerary, guide you around nearby places, and share it in an emergency."
+        }
+      ],
+      "expo-notifications",
+      "expo-apple-authentication",
+      "expo-secure-store",
+      "expo-asset",
+      "expo-font"
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+# Root-level catch-all — apps/mobile and services/api each have their own more
+# specific .gitignore too; this covers anything at the workspace root or in
+# directories without their own ignore file (e.g. apps/.expo build cache).
+
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+.env*.local
+.expo/
+dist/
+.DS_Store
+*.pem
