@@ -21,6 +21,21 @@ Lexical RAG works without embeddings. Optional: set `EMBEDDING_MODEL` and run `s
 
 ## What the phone does
 
+By default, Companion uses Zentrip's shared grounded voice path when `VOICE_USE_SHARED_GATEWAY=true`:
+
+```text
+POST /v1/zenny/voice/live/session (JWT, sttProvider=deepgram)
+  → FastAPI WebSocket → Deepgram streaming STT
+  → shared Zenny gateway (profile, trip memory, recommendations, safety, citations, services)
+  → native phone TTS
+```
+
+This keeps Deepgram responsible for speech recognition while Zentrip remains the source of
+truth for travel answers. The LiveKit worker path below is an opt-in provider-owned voice
+experience for deployments that deliberately set `VOICE_USE_SHARED_GATEWAY=false`:
+
 `POST /v1/zenny/voice/token` (JWT) → join LiveKit room → publish mic → play agent audio.
 
-If LiveKit native modules are missing (Expo Go), Companion keeps tap-to-talk on `/v1/zenny/voice/turn`.
+If Deepgram streaming is unavailable, Companion falls back to tap-to-talk on
+`/v1/zenny/voice/turn`, which still uses the shared Zenny gateway by default. If LiveKit native
+modules are missing (Expo Go), the same fallback remains available.
