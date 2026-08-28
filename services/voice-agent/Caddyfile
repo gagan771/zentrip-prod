@@ -1,0 +1,6 @@
+# Production: terminate TLS for the token/API host.
+# LiveKit WebRTC should follow LiveKit's own TLS/TURN setup.
+
+api.example.com {
+	reverse_proxy host.docker.internal:8000
+}

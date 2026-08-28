@@ -1,0 +1,49 @@
+services:
+  # Only for self-host. LiveKit Cloud: omit this profile.
+  livekit:
+    image: livekit/livekit-server:v1.8.4
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "50000-50100:50000-50100/udp"
+    restart: unless-stopped
+    profiles: ["selfhost"]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.4
+    volumes:
+      - ./data/qdrant:/qdrant/storage
+    restart: unless-stopped
+
+  agent:
+    build: .
+    env_file:
+      - .env
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - redis
+      - qdrant
+    restart: unless-stopped
+    volumes:
+      - ./knowledge:/app/knowledge:ro
+      - ./prompts:/app/prompts:ro
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy:/data
+    restart: unless-stopped
+    profiles: ["tls"]
