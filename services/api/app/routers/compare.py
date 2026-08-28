@@ -18,15 +18,19 @@ from app.comparison_service import (
 from app.db import get_db
 from app.deps import get_current_user
 from app.models import Outcome, ProviderObservation, Recommendation, StayObservation, StayRecommendation, Trip, User
+from app.provider_handoff import handoff_to_dict, stay_handoffs, transport_handoffs
+from app.social_service import stay_context
 from app.schemas import (
     CompareResultOut,
     CompareSearchRequest,
     CompareSearchResponse,
     OutcomeCreate,
     OutcomeOut,
+    ProviderHandoffOut,
     StayResultOut,
     StaySearchRequest,
     StaySearchResponse,
+    StayScoreComponentOut,
 )
 
 router = APIRouter(prefix="/v1/compare", tags=["compare"])
@@ -122,9 +126,10 @@ async def run_compare(
     if not ranked:
         return CompareSearchResponse(
             results=[],
-            isDemoData=True,
+            isDemoData=False,
             liveCheckRequired=True,
-            message="No supported demo route yet. The first comparison adapters cover Delhi, Agra, and Jaipur.",
+            message="Open a live provider below for current fares. Typical corridor estimates exist for Delhi, Agra, and Jaipur.",
+            handoffs=[ProviderHandoffOut(**handoff_to_dict(item)) for item in transport_handoffs(origin, destination, departure_date)],
         )
 
     observations = [_observation_from_scored(user.id, scored) for scored in ranked]
@@ -155,7 +160,8 @@ async def run_compare(
         ],
         isDemoData=True,
         liveCheckRequired=True,
-        message="Demo-only corridor comparison. Fares and availability are not live or bookable; check an authorized provider before acting.",
+        message="Typical corridor estimates below. Live fares and booking open on IRCTC, RedBus, AbhiBus, Goibibo, MakeMyTrip, and other official sites.",
+        handoffs=[ProviderHandoffOut(**handoff_to_dict(item)) for item in transport_handoffs(origin, destination, departure_date)],
     )
 
 
@@ -220,6 +226,8 @@ def _stay_result_out(
         score=recommendation.score,
         badges=scored.badges,
         explanation=" ".join(scored.reasons),
+        scoreBreakdown=[StayScoreComponentOut(**item) for item in scored.score_breakdown],
+        contextSignals=scored.context_signals,
     )
 
 
@@ -232,21 +240,34 @@ async def run_stay_search(
     check_out: date,
     budget_level: str,
     guests: int = 1,
+    traveler_style: str = "balanced",
 ) -> StaySearchResponse:
     """Stay-search counterpart to run_compare above — same shared-function reasoning:
     a future Agent Gateway "search_stays" tool call and this REST endpoint should
     persist identical StayObservation/StayRecommendation rows.
     """
     raw_results = search_stay_adapters(
-        StaySearchInput(city=city, check_in=check_in, check_out=check_out, budget_level=budget_level, guests=guests)
+        StaySearchInput(
+            city=city,
+            check_in=check_in,
+            check_out=check_out,
+            budget_level=budget_level,
+            guests=guests,
+            traveler_style=traveler_style,
+        )
     )
-    ranked = rank_stay_results(raw_results, budget_level)
+    context_signals = {
+        result.external_id: stay_context(city, check_in, check_out, result.stay_type)
+        for result in raw_results
+    }
+    ranked = rank_stay_results(raw_results, budget_level, traveler_style, context_signals)
     if not ranked:
         return StaySearchResponse(
             results=[],
-            isDemoData=True,
+            isDemoData=False,
             liveCheckRequired=True,
-            message="No supported demo stays yet. The first stay adapters cover Delhi, Agra, and Jaipur.",
+            message="Open a live stay site below for current rates. Typical corridor estimates exist for Delhi, Agra, and Jaipur.",
+            handoffs=[ProviderHandoffOut(**handoff_to_dict(item)) for item in stay_handoffs(city, check_in, check_out, guests)],
         )
 
     observations = [_stay_observation_from_scored(user.id, scored) for scored in ranked]
@@ -276,7 +297,8 @@ async def run_stay_search(
         ],
         isDemoData=True,
         liveCheckRequired=True,
-        message="Demo-only corridor stay search. Prices and availability are not live or bookable; check an authorized provider before acting.",
+        message="Typical corridor stay estimates below. Live rooms and booking open on MakeMyTrip, Goibibo, Booking.com, Agoda, Airbnb, and Hostelworld.",
+        handoffs=[ProviderHandoffOut(**handoff_to_dict(item)) for item in stay_handoffs(city, check_in, check_out, guests)],
     )
 
 
@@ -296,7 +318,33 @@ async def stay_search(
         check_out=body.checkOut,
         budget_level=body.budgetLevel,
         guests=body.guests,
+        traveler_style=body.travelerStyle,
     )
+
+
+@router.get("/handoffs", response_model=list[ProviderHandoffOut])
+async def list_transport_handoffs(
+    origin: str,
+    destination: str,
+    departureDate: date,
+    user: User = Depends(get_current_user),
+) -> list[ProviderHandoffOut]:
+    del user
+    return [ProviderHandoffOut(**handoff_to_dict(item)) for item in transport_handoffs(origin, destination, departureDate)]
+
+
+@router.get("/stays/handoffs", response_model=list[ProviderHandoffOut])
+async def list_stay_handoffs(
+    city: str,
+    checkIn: date,
+    checkOut: date,
+    guests: int = 1,
+    user: User = Depends(get_current_user),
+) -> list[ProviderHandoffOut]:
+    del user
+    if checkOut <= checkIn:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="checkOut must be after checkIn")
+    return [ProviderHandoffOut(**handoff_to_dict(item)) for item in stay_handoffs(city, checkIn, checkOut, guests)]
 
 
 @router.post("/recommendations/{recommendation_id}/outcomes", response_model=OutcomeOut, status_code=status.HTTP_201_CREATED)

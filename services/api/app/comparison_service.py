@@ -181,6 +181,7 @@ class StaySearchInput:
     check_out: date
     budget_level: str
     guests: int = 1
+    traveler_style: str = "balanced"
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,7 @@ class StaySearchResult:
     distance_to_center_km: float
     cancellation_score: float
     availability: bool
+    attributes: dict[str, float]
     source_kind: str = "mock"
 
     @property
@@ -211,19 +213,19 @@ class StaySearchResult:
 # demo data only, never presented as a live, bookable price (source_kind="mock").
 _STAYS: dict[str, list[dict]] = {
     "DEL": [
-        {"provider": "Zentrip Backpacker Hostel Demo", "stay_type": "hostel", "price_per_night": 650, "rating": 4.3, "distance_to_center_km": 1.2, "cancellation": 0.85},
-        {"provider": "Zentrip Budget Hotel Demo", "stay_type": "hotel", "price_per_night": 1900, "rating": 4.0, "distance_to_center_km": 2.8, "cancellation": 0.70},
-        {"provider": "Zentrip Comfort Hotel Demo", "stay_type": "hotel", "price_per_night": 3400, "rating": 4.5, "distance_to_center_km": 0.8, "cancellation": 0.80},
+        {"provider": "Zentrip Backpacker Hostel Demo", "stay_type": "hostel", "price_per_night": 650, "rating": 4.3, "distance_to_center_km": 1.2, "cancellation": 0.85, "attributes": {"cleanliness": .82, "safety": .78, "social": .95, "quiet": .42, "remoteWork": .55, "staff": .86, "community": .92, "trek": .35, "solo": .94, "nightlife": .88}},
+        {"provider": "Zentrip Budget Hotel Demo", "stay_type": "hotel", "price_per_night": 1900, "rating": 4.0, "distance_to_center_km": 2.8, "cancellation": 0.70, "attributes": {"cleanliness": .78, "safety": .82, "social": .35, "quiet": .78, "remoteWork": .62, "staff": .72, "community": .30, "trek": .30, "solo": .58, "nightlife": .28}},
+        {"provider": "Zentrip Comfort Hotel Demo", "stay_type": "hotel", "price_per_night": 3400, "rating": 4.5, "distance_to_center_km": 0.8, "cancellation": 0.80, "attributes": {"cleanliness": .94, "safety": .93, "social": .42, "quiet": .86, "remoteWork": .84, "staff": .90, "community": .35, "trek": .25, "solo": .70, "nightlife": .38}},
     ],
     "AGR": [
-        {"provider": "Zentrip Backpacker Hostel Demo", "stay_type": "hostel", "price_per_night": 550, "rating": 4.1, "distance_to_center_km": 1.5, "cancellation": 0.85},
-        {"provider": "Zentrip Budget Hotel Demo", "stay_type": "hotel", "price_per_night": 1700, "rating": 3.9, "distance_to_center_km": 3.0, "cancellation": 0.70},
-        {"provider": "Zentrip Taj-View Hotel Demo", "stay_type": "hotel", "price_per_night": 4200, "rating": 4.6, "distance_to_center_km": 0.5, "cancellation": 0.75},
+        {"provider": "Zentrip Backpacker Hostel Demo", "stay_type": "hostel", "price_per_night": 550, "rating": 4.1, "distance_to_center_km": 1.5, "cancellation": 0.85, "attributes": {"cleanliness": .80, "safety": .80, "social": .92, "quiet": .48, "remoteWork": .52, "staff": .84, "community": .88, "trek": .40, "solo": .92, "nightlife": .72}},
+        {"provider": "Zentrip Budget Hotel Demo", "stay_type": "hotel", "price_per_night": 1700, "rating": 3.9, "distance_to_center_km": 3.0, "cancellation": 0.70, "attributes": {"cleanliness": .76, "safety": .80, "social": .32, "quiet": .80, "remoteWork": .58, "staff": .70, "community": .24, "trek": .28, "solo": .55, "nightlife": .22}},
+        {"provider": "Zentrip Taj-View Hotel Demo", "stay_type": "hotel", "price_per_night": 4200, "rating": 4.6, "distance_to_center_km": 0.5, "cancellation": 0.75, "attributes": {"cleanliness": .95, "safety": .92, "social": .40, "quiet": .82, "remoteWork": .80, "staff": .92, "community": .30, "trek": .22, "solo": .68, "nightlife": .30}},
     ],
     "JAI": [
-        {"provider": "Zentrip Backpacker Hostel Demo", "stay_type": "hostel", "price_per_night": 600, "rating": 4.2, "distance_to_center_km": 1.0, "cancellation": 0.85},
-        {"provider": "Zentrip Budget Hotel Demo", "stay_type": "hotel", "price_per_night": 1800, "rating": 4.0, "distance_to_center_km": 2.5, "cancellation": 0.70},
-        {"provider": "Zentrip Heritage Hotel Demo", "stay_type": "hotel", "price_per_night": 3800, "rating": 4.4, "distance_to_center_km": 1.1, "cancellation": 0.78},
+        {"provider": "Zentrip Backpacker Hostel Demo", "stay_type": "hostel", "price_per_night": 600, "rating": 4.2, "distance_to_center_km": 1.0, "cancellation": .85, "attributes": {"cleanliness": .84, "safety": .80, "social": .96, "quiet": .40, "remoteWork": .54, "staff": .88, "community": .95, "trek": .48, "solo": .95, "nightlife": .94}},
+        {"provider": "Zentrip Budget Hotel Demo", "stay_type": "hotel", "price_per_night": 1800, "rating": 4.0, "distance_to_center_km": 2.5, "cancellation": .70, "attributes": {"cleanliness": .79, "safety": .82, "social": .34, "quiet": .78, "remoteWork": .60, "staff": .73, "community": .28, "trek": .35, "solo": .58, "nightlife": .25}},
+        {"provider": "Zentrip Heritage Hotel Demo", "stay_type": "hotel", "price_per_night": 3800, "rating": 4.4, "distance_to_center_km": 1.1, "cancellation": .78, "attributes": {"cleanliness": .92, "safety": .90, "social": .48, "quiet": .74, "remoteWork": .72, "staff": .90, "community": .42, "trek": .30, "solo": .72, "nightlife": .52}},
     ],
 }
 
@@ -257,6 +259,7 @@ class _CityStayDemoAdapter:
                 distance_to_center_km=self._entry["distance_to_center_km"],
                 cancellation_score=self._entry["cancellation"],
                 availability=True,
+                attributes=self._entry["attributes"],
             )
         ]
 
@@ -279,6 +282,8 @@ class ScoredStayResult:
     rank: int
     badges: list[str]
     reasons: list[str]
+    score_breakdown: list[dict[str, object]]
+    context_signals: list[str]
 
 
 _STAY_WEIGHTS = {
@@ -288,35 +293,68 @@ _STAY_WEIGHTS = {
     "mixed": {"price": 0.30, "rating": 0.28, "distance": 0.22, "cancellation": 0.20},
 }
 
+_STAY_STYLE_WEIGHTS: dict[str, dict[str, float]] = {
+    "balanced": {"cleanliness": .13, "safety": .13, "value": .14, "location": .12, "social": .08, "quiet": .08, "remoteWork": .07, "staff": .07, "community": .05, "trek": .04, "solo": .05, "cancellation": .04},
+    "social": {"social": .16, "community": .16, "solo": .13, "nightlife": .10, "safety": .10, "cleanliness": .08, "value": .10, "location": .07, "staff": .05, "quiet": .02, "cancellation": .03},
+    "quiet": {"quiet": .18, "cleanliness": .14, "safety": .14, "remoteWork": .12, "staff": .09, "value": .09, "location": .08, "cancellation": .06, "social": .03, "community": .02, "solo": .05},
+    "remote_work": {"remoteWork": .20, "quiet": .16, "safety": .13, "cleanliness": .12, "staff": .10, "location": .08, "value": .08, "cancellation": .05, "social": .03, "community": .02, "solo": .03},
+    "trek": {"trek": .20, "safety": .14, "solo": .12, "value": .12, "staff": .10, "cleanliness": .09, "location": .09, "social": .06, "community": .04, "quiet": .02, "cancellation": .02},
+    "solo": {"solo": .18, "safety": .16, "social": .13, "cleanliness": .12, "staff": .10, "community": .08, "value": .09, "location": .06, "quiet": .03, "trek": .03, "cancellation": .02},
+}
+
+_STAY_COMPONENT_LABELS = {
+    "cleanliness": "Cleanliness", "safety": "Safety perception", "value": "Value for money",
+    "location": "Location", "social": "Social atmosphere", "quiet": "Quietness",
+    "remoteWork": "Remote-work fit", "staff": "Staff helpfulness", "community": "Community activity",
+    "trek": "Trek accessibility", "solo": "Solo-traveller fit", "nightlife": "Nightlife fit",
+    "cancellation": "Cancellation flexibility",
+}
+
 
 def search_stay_adapters(search_input: StaySearchInput) -> list[StaySearchResult]:
     return [result for adapter in STAY_ADAPTERS for result in adapter.search(search_input)]
 
 
-def rank_stay_results(results: list[StaySearchResult], budget_level: str) -> list[ScoredStayResult]:
+def rank_stay_results(
+    results: list[StaySearchResult],
+    budget_level: str,
+    traveler_style: str = "balanced",
+    context_signals: dict[str, list[str]] | None = None,
+) -> list[ScoredStayResult]:
     available = [result for result in results if result.availability]
     if not available:
         return []
 
     weights = _STAY_WEIGHTS[budget_level]
+    style_weights = _STAY_STYLE_WEIGHTS.get(traveler_style, _STAY_STYLE_WEIGHTS["balanced"])
     prices = [result.total_price for result in available]
     distances = [result.distance_to_center_km for result in available]
     raw_scores: list[tuple[StaySearchResult, float]] = []
     for result in available:
-        score = (
+        base_score = (
             weights["price"] * _lower_is_better(result.total_price, min(prices), max(prices))
             + weights["rating"] * (result.rating / 5.0)
             + weights["distance"] * _lower_is_better(result.distance_to_center_km, min(distances), max(distances))
             + weights["cancellation"] * result.cancellation_score
         )
-        raw_scores.append((result, score))
+        value = _lower_is_better(result.total_price, min(prices), max(prices))
+        location = _lower_is_better(result.distance_to_center_km, min(distances), max(distances))
+        component_values = {**result.attributes, "value": value, "location": location, "cancellation": result.cancellation_score}
+        social_score = sum(style_weights[key] * component_values.get(key, 0.0) for key in style_weights)
+        score = (base_score * 0.45) + (social_score * 0.55)
+        breakdown = [
+            {"key": key, "label": _STAY_COMPONENT_LABELS[key], "score": round(component_values.get(key, 0.0) * 100), "weight": round(weight * 100)}
+            for key, weight in sorted(style_weights.items(), key=lambda item: item[1], reverse=True)
+        ]
+        signals = (context_signals or {}).get(result.external_id, [])
+        raw_scores.append((result, score, breakdown, signals))
 
     raw_scores.sort(key=lambda item: item[1], reverse=True)
     cheapest = min(available, key=lambda result: result.total_price)
     best_rated = max(available, key=lambda result: result.rating)
     most_central = min(available, key=lambda result: result.distance_to_center_km)
     ranked: list[ScoredStayResult] = []
-    for index, (result, score) in enumerate(raw_scores, start=1):
+    for index, (result, score, breakdown, signals) in enumerate(raw_scores, start=1):
         badges = ["RECOMMENDED"] if index == 1 else []
         if result == cheapest:
             badges.append("CHEAPEST")
@@ -325,12 +363,15 @@ def rank_stay_results(results: list[StaySearchResult], budget_level: str) -> lis
         if result == most_central:
             badges.append("MOST CENTRAL")
         reasons = [
+            f"Stay Score {round(score * 10, 1)}/10 for a {traveler_style.replace('_', ' ')} traveller",
             f"₹{result.total_price} total demo price for {result.nights} night(s)",
             f"{result.rating}/5 demo rating",
             f"{result.distance_to_center_km} km from city center (demo)",
-            "Demo data only — a live provider check is required before booking.",
         ]
-        ranked.append(ScoredStayResult(result=result, score=round(score, 4), rank=index, badges=badges, reasons=reasons))
+        if signals:
+            reasons.append(" ".join(signals))
+        reasons.append("Demo data only — a live provider check is required before booking.")
+        ranked.append(ScoredStayResult(result=result, score=round(score, 4), rank=index, badges=badges, reasons=reasons, score_breakdown=breakdown, context_signals=signals))
     return ranked
 
 
