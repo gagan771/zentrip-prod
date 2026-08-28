@@ -31,16 +31,39 @@ _LOW_CONFIDENCE_REPLY = (
     "plaque or sign, or ask me by name instead — I currently know Delhi, Agra, and Jaipur "
     "corridor landmarks."
 )
+_CONTENT_MODES = {
+    "overview": "A quick guide",
+    "deep_history": "Deep history",
+    "architecture": "Architecture lens",
+    "kids": "Kid-friendly guide",
+    "academic": "Academic context",
+    "tourists_miss": "What most tourists miss",
+}
+
+
+def _distance_km(latitude_a: float, longitude_a: float, latitude_b: float, longitude_b: float) -> float:
+    """Small-circle approximation is sufficient for corridor candidate narrowing."""
+    from math import cos, radians, sqrt
+
+    lat_delta = (latitude_b - latitude_a) * 111.0
+    lon_delta = (longitude_b - longitude_a) * 111.0 * cos(radians(latitude_a))
+    return sqrt(lat_delta * lat_delta + lon_delta * lon_delta)
 
 
 @router.post("/identify", response_model=GuideIdentifyResponse)
 async def identify(
     photo: UploadFile = File(...),
     city: str | None = Form(default=None),
+    latitude: float | None = Form(default=None, ge=-90, le=90),
+    longitude: float | None = Form(default=None, ge=-180, le=180),
+    mode: str = Form(default="overview"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> GuideIdentifyResponse:
     del user  # auth boundary only — identification isn't personalized
+
+    if mode not in _CONTENT_MODES:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unsupported guide content mode")
 
     media_type = _CONTENT_TYPE_MEDIA.get((photo.content_type or "").casefold())
     if media_type is None:
@@ -52,17 +75,31 @@ async def identify(
     if len(image_bytes) > _MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Photo is too large")
 
+    if (latitude is None) != (longitude is None):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Latitude and longitude must be provided together")
+
     # Step 1 (spec §17.4): a location/city hint narrows candidates before any vision call —
-    # cheaper and less error-prone than asking the model to pick from every KB entity. Real
-    # GPS-distance narrowing (needs lat/lng on KnowledgeEntity) is deferred — city-string
-    # matching is enough for a 3-city, 9-landmark corridor. Falls back to every published
-    # place if no city hint was given.
+    # cheaper and less error-prone than asking the model to pick from every KB entity.
     candidate_query = select(KnowledgeEntity).where(
         KnowledgeEntity.status == "published", KnowledgeEntity.entity_type != "payment_info"
     )
     if city:
         candidate_query = candidate_query.where(KnowledgeEntity.city.ilike(city))
     candidates = list((await db.execute(candidate_query)).scalars().all())
+    if latitude is not None and longitude is not None:
+        located = [
+            entity for entity in candidates
+            if entity.latitude is not None and entity.longitude is not None
+        ]
+        nearby = [
+            entity for entity in located
+            if _distance_km(latitude, longitude, entity.latitude, entity.longitude) <= 75
+        ]
+        # Keep the city/entity fallback if no seeded centroid is close enough; a GPS
+        # reading can be noisy and a false empty candidate list is worse than a wider
+        # vision shortlist.
+        if nearby:
+            candidates = nearby
     candidate_names = [entity.name for entity in candidates]
 
     try:
@@ -76,7 +113,7 @@ async def identify(
     # ask the user to help disambiguate, never present a guess as fact.
     if result.entity_name is None or result.confidence in ("low", "none"):
         return GuideIdentifyResponse(
-            matched=False, entityName=None, confidence=result.confidence, reply=_LOW_CONFIDENCE_REPLY, citations=[]
+            matched=False, entityName=None, confidence=result.confidence, reply=_LOW_CONFIDENCE_REPLY, citations=[], contentMode=mode
         )
 
     matched_entity = next((entity for entity in candidates if entity.name == result.entity_name), None)
@@ -84,7 +121,7 @@ async def identify(
         # Should be unreachable — identify_landmark() already validates against
         # candidate_names — but fail safe rather than crash if it ever happens.
         return GuideIdentifyResponse(
-            matched=False, entityName=None, confidence="none", reply=_LOW_CONFIDENCE_REPLY, citations=[]
+            matched=False, entityName=None, confidence="none", reply=_LOW_CONFIDENCE_REPLY, citations=[], contentMode=mode
         )
 
     # Step 4-5 (spec §17.4): retrieve-then-generate. Query by the matched entity's own id
@@ -114,6 +151,7 @@ async def identify(
             confidence=result.confidence,
             reply=f"That looks like {matched_entity.name}, but I don't have a reviewed source for it yet.",
             citations=[],
+            contentMode=mode,
         )
 
     spoken_facts = [claim.claim for claim, _source in rows]
@@ -131,6 +169,7 @@ async def identify(
         matched=True,
         entityName=matched_entity.name,
         confidence=result.confidence,
-        reply=f"{matched_entity.name}: " + " ".join(spoken_facts),
+        reply=f"{_CONTENT_MODES[mode]} — {matched_entity.name}: " + " ".join(spoken_facts),
         citations=citations,
+        contentMode=mode,
     )
