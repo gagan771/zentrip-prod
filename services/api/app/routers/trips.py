@@ -9,11 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.deps import get_current_user
 from app.llm import LLMNotConfiguredError, LLMProviderError, generate_itinerary_days, provider_configuration_error
-from app.models import ItineraryDay, KnowledgeClaim, KnowledgeEntity, KnowledgeSource, Trip, User
+from app.models import ItineraryDay, KnowledgeClaim, KnowledgeEntity, KnowledgeSource, Trip, TripBooking, User
 from app.schemas import (
     ActivityOut,
     GenerateItineraryResponse,
     ItineraryDayOut,
+    TripBookingCreate,
+    TripBookingOut,
     TripCreate,
     TripOut,
     TripTimelineResponse,
@@ -43,6 +45,20 @@ def _day_out(day: ItineraryDay) -> ItineraryDayOut:
     )
 
 
+def _booking_out(booking: TripBooking) -> TripBookingOut:
+    return TripBookingOut(
+        id=booking.id,
+        kind=booking.kind,
+        title=booking.title,
+        provider=booking.provider,
+        startsAt=booking.starts_at,
+        endsAt=booking.ends_at,
+        reference=booking.reference,
+        status=booking.status,
+        deepLink=booking.deep_link,
+    )
+
+
 async def _load_owned_trip(db: AsyncSession, trip_id: uuid.UUID, user_id: uuid.UUID) -> Trip:
     trip = (
         await db.execute(select(Trip).where(Trip.id == trip_id, Trip.user_id == user_id))
@@ -64,6 +80,10 @@ async def _load_candidate_places(db: AsyncSession, cities: list[str]) -> list[di
             .where(
                 KnowledgeEntity.city.in_(cities),
                 KnowledgeEntity.status == "published",
+                KnowledgeEntity.entity_type.notin_([
+                    "payment_info", "safety_info", "monument_feature",
+                    "city_guide", "travel_route", "season", "viewpoint", "food_district",
+                ]),
                 KnowledgeClaim.verification_status == "published",
                 KnowledgeSource.status == "active",
             )
@@ -129,26 +149,51 @@ async def get_itinerary(
     return [_day_out(d) for d in days]
 
 
+@router.post("/{trip_id}/bookings", response_model=TripBookingOut, status_code=201)
+async def create_booking(
+    trip_id: uuid.UUID,
+    body: TripBookingCreate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TripBookingOut:
+    trip = await _load_owned_trip(db, trip_id, user.id)
+    if body.endsAt is not None and body.startsAt is not None and body.endsAt < body.startsAt:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="endsAt must not be before startsAt")
+    booking = TripBooking(
+        trip_id=trip.id,
+        user_id=user.id,
+        kind=body.kind,
+        title=body.title,
+        provider=body.provider,
+        starts_at=body.startsAt,
+        ends_at=body.endsAt,
+        reference=body.reference,
+        status=body.status,
+        deep_link=body.deepLink,
+    )
+    db.add(booking)
+    await db.commit()
+    await db.refresh(booking)
+    return _booking_out(booking)
+
+
 @router.get("/{trip_id}/timeline", response_model=TripTimelineResponse)
 async def get_trip_timeline(
     trip_id: uuid.UUID, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> TripTimelineResponse:
     """Read/aggregation layer per spec 04 (Journey/Booking Hub) §"Backend": assembles
-    the trip + its itinerary days into a single payload so a client doesn't need two
-    round trips (GET /{trip_id} then GET /{trip_id}/itinerary).
-
-    Intentionally excludes Recommendation/StayRecommendation rows (Compare and Stay
-    Search results): those tables have no trip_id today, only user_id, so there is no
-    real foreign key to join on here. Guessing an association (e.g. matching by date
-    overlap) would silently misattribute a recommendation to the wrong trip. A future
-    pass needs to add trip_id to those tables — booked/selected outcomes on them — before
-    they can be merged into this timeline as genuine "bookings" alongside itinerary days.
+    the trip, itinerary days, and explicit booking/handoff records into one payload.
+    Search recommendations remain excluded until a traveler explicitly saves one as
+    a booking, avoiding accidental attribution to the wrong trip.
     """
     trip = await _load_owned_trip(db, trip_id, user.id)
     days = (
         await db.execute(select(ItineraryDay).where(ItineraryDay.trip_id == trip.id).order_by(ItineraryDay.day))
     ).scalars().all()
-    return TripTimelineResponse(trip=_trip_out(trip), days=[_day_out(d) for d in days])
+    bookings = (
+        await db.execute(select(TripBooking).where(TripBooking.trip_id == trip.id).order_by(TripBooking.starts_at, TripBooking.created_at))
+    ).scalars().all()
+    return TripTimelineResponse(trip=_trip_out(trip), days=[_day_out(d) for d in days], bookings=[_booking_out(b) for b in bookings])
 
 
 async def regenerate_itinerary(db: AsyncSession, trip: Trip) -> tuple[list[ItineraryDay], list[dict]]:
