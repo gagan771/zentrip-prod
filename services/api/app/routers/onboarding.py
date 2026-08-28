@@ -7,8 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_db
-from app.models import OnboardingCall
-from app.schemas import OnboardingCallCreate, OnboardingCallOut
+from app.deps import get_current_user
+from app.models import OnboardingCall, User
+from app.schemas import OnboardingCallCreate, OnboardingCallOut, OnboardingConfigOut
 from app.twilio_voice import (
     ONBOARDING_QUESTIONS,
     TwilioNotConfiguredError,
@@ -20,6 +21,27 @@ from app.twilio_voice import (
 )
 
 router = APIRouter(prefix="/v1/onboarding/calls", tags=["onboarding"])
+config_router = APIRouter(prefix="/v1/onboarding", tags=["onboarding"])
+
+
+@config_router.get("/config", response_model=OnboardingConfigOut)
+async def onboarding_config(_user: User = Depends(get_current_user)) -> OnboardingConfigOut:
+    missing = [
+        name
+        for name, value in (
+            ("TWILIO_ACCOUNT_SID", settings.twilio_account_sid),
+            ("TWILIO_AUTH_TOKEN", settings.twilio_auth_token),
+            ("TWILIO_FROM_NUMBER", settings.twilio_from_number),
+            ("PUBLIC_BASE_URL", settings.public_base_url),
+        )
+        if not value
+    ]
+    return OnboardingConfigOut(
+        ready=not missing,
+        missing=missing,
+        recordingEnabled=False,
+        publicBaseUrlSet=bool(settings.public_base_url),
+    )
 
 
 def _out(call: OnboardingCall) -> OnboardingCallOut:
@@ -51,7 +73,11 @@ async def _verify_twilio_request(request: Request, form: dict[str, str]) -> None
 
 
 @router.post("", response_model=OnboardingCallOut, status_code=status.HTTP_201_CREATED)
-async def request_onboarding_call(body: OnboardingCallCreate, db: AsyncSession = Depends(get_db)) -> OnboardingCallOut:
+async def request_onboarding_call(
+    body: OnboardingCallCreate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> OnboardingCallOut:
     if not body.callConsent:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -59,6 +85,7 @@ async def request_onboarding_call(body: OnboardingCallCreate, db: AsyncSession =
         )
 
     call = OnboardingCall(
+        user_id=user.id,
         phone_number=body.phoneNumber,
         call_consent=True,
         recording_consent=body.recordingConsent,
