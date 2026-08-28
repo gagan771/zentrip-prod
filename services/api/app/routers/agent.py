@@ -18,6 +18,7 @@ class AgentMessageRequest(BaseModel):
 
 
 class AgentMessageResponse(BaseModel):
+    interactionId: str | None = None
     intent: str
     policyTier: str
     reply: str
@@ -33,6 +34,7 @@ async def send_message(
 ) -> AgentMessageResponse:
     result = await handle_message(user, body.text, db, session_id=body.sessionId)
     return AgentMessageResponse(
+        interactionId=str(result.interaction_id) if result.interaction_id else None,
         intent=result.intent,
         policyTier=result.policy_tier,
         reply=result.reply,

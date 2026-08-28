@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.deps import get_current_staff
+from app.knowledge_learning import knowledge_improvement_report
 from app.knowledge_ops import operational_health
 from app.models import (
     ExpertProfile,
@@ -16,6 +17,8 @@ from app.models import (
     ExplorerSubmission,
     KnowledgeClaim,
     KnowledgeEntity,
+    KnowledgeGap,
+    KnowledgeInteraction,
     KnowledgeModerationAudit,
     KnowledgeObservation,
     KnowledgeSource,
@@ -29,6 +32,9 @@ from app.schemas import (
     KnowledgeClaimCreate,
     KnowledgeEditorialClaimOut,
     KnowledgeEditorialQueueResponse,
+    KnowledgeGapDecision,
+    KnowledgeGapOut,
+    KnowledgeImprovementReport,
     KnowledgeEntityCreate,
     KnowledgeModerationAuditOut,
     KnowledgeModerationDecision,
@@ -112,6 +118,63 @@ async def operational_knowledge_health(
 ) -> KnowledgeOperationalHealthOut:
     rows = (await db.scalars(select(KnowledgeObservation))).all()
     return KnowledgeOperationalHealthOut(**operational_health(rows))
+
+
+def _gap_out(gap: KnowledgeGap) -> KnowledgeGapOut:
+    return KnowledgeGapOut(
+        id=gap.id,
+        query=gap.example_query,
+        intent=gap.intent,
+        occurrenceCount=gap.occurrence_count,
+        noMatchCount=gap.no_match_count,
+        negativeFeedbackCount=gap.negative_feedback_count,
+        priority=gap.priority,
+        status=gap.status,
+        lastSeenAt=gap.last_seen_at,
+        resolutionNote=gap.resolution_note,
+    )
+
+
+@router.get("/knowledge/improvement-report", response_model=KnowledgeImprovementReport)
+async def knowledge_improvement_health(
+    _staff: User = Depends(get_current_staff), db: AsyncSession = Depends(get_db)
+) -> KnowledgeImprovementReport:
+    """Show whether real questions are improving coverage over time."""
+    interactions = (
+        await db.scalars(select(KnowledgeInteraction).order_by(desc(KnowledgeInteraction.created_at)).limit(5000))
+    ).all()
+    gaps = (await db.scalars(select(KnowledgeGap).limit(1000))).all()
+    return KnowledgeImprovementReport(**knowledge_improvement_report(interactions, gaps))
+
+
+@router.get("/knowledge/gaps", response_model=list[KnowledgeGapOut])
+async def knowledge_gap_queue(
+    status_filter: str | None = Query(default="open", alias="status", pattern="^(open|in_progress|resolved|dismissed)$"),
+    limit: int = Query(default=100, ge=1, le=500),
+    _staff: User = Depends(get_current_staff), db: AsyncSession = Depends(get_db),
+) -> list[KnowledgeGapOut]:
+    statement = select(KnowledgeGap).order_by(desc(KnowledgeGap.priority), desc(KnowledgeGap.last_seen_at)).limit(limit)
+    if status_filter:
+        statement = statement.where(KnowledgeGap.status == status_filter)
+    return [_gap_out(gap) for gap in (await db.scalars(statement)).all()]
+
+
+@router.post("/knowledge/gaps/{gap_id}", response_model=KnowledgeGapOut)
+async def review_knowledge_gap(
+    gap_id: uuid.UUID,
+    body: KnowledgeGapDecision,
+    staff: User = Depends(get_current_staff),
+    db: AsyncSession = Depends(get_db),
+) -> KnowledgeGapOut:
+    gap = await db.scalar(select(KnowledgeGap).where(KnowledgeGap.id == gap_id))
+    if gap is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge gap not found")
+    previous = gap.status
+    gap.status = body.status
+    gap.resolution_note = body.resolutionNote
+    await _audit(db, staff, "gap", gap.id, previous, gap.status, body.resolutionNote)
+    await db.commit()
+    return _gap_out(gap)
 
 
 @router.get("/knowledge/observations", response_model=list[KnowledgeObservationOut])

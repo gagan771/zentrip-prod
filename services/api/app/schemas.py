@@ -553,6 +553,45 @@ class KnowledgeObservationDecision(BaseModel):
     reviewerNote: str | None = Field(default=None, max_length=1000)
 
 
+class KnowledgeInteractionFeedback(BaseModel):
+    helpful: bool
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class KnowledgeInteractionOut(BaseModel):
+    id: uuid.UUID
+    feedback: str | None
+    outcome: str
+
+
+class KnowledgeGapOut(BaseModel):
+    id: uuid.UUID
+    query: str
+    intent: str
+    occurrenceCount: int
+    noMatchCount: int
+    negativeFeedbackCount: int
+    priority: int
+    status: str
+    lastSeenAt: datetime
+    resolutionNote: str | None = None
+
+
+class KnowledgeGapDecision(BaseModel):
+    status: str = Field(pattern="^(open|in_progress|resolved|dismissed)$")
+    resolutionNote: str | None = Field(default=None, max_length=2000)
+
+
+class KnowledgeImprovementReport(BaseModel):
+    totalInteractions: int
+    noMatch: int
+    lowConfidence: int
+    negativeFeedback: int
+    openGaps: int
+    resolvedGaps: int
+    topGaps: list[dict]
+
+
 class KnowledgeObservationOut(BaseModel):
     id: uuid.UUID
     entityId: uuid.UUID
@@ -912,6 +951,7 @@ class KnowledgeSearchResponse(BaseModel):
 
 class ZennyVoiceTurnResponse(BaseModel):
     sessionId: str
+    interactionId: uuid.UUID | None = None
     transcript: str
     spokenText: str
     intent: str

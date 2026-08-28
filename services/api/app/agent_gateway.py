@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_intent import classify_intent, is_backchannel
 from app.comparison_service import find_known_locations
+from app.knowledge_learning import record_knowledge_interaction
 from app.knowledge_service import search_published_claims
 from app.llm import LLMNotConfiguredError, LLMProviderError
 from app.phrasebook import _translation_reply
@@ -50,6 +51,7 @@ class AgentReply:
     # client can pre-fill the grocery screen instead of re-parsing the spoken reply text.
     # Empty for every other intent.
     items: list[str] = field(default_factory=list)
+    interaction_id: uuid.UUID | None = None
 
 
 def tag_policy(intent: str) -> str:
@@ -539,8 +541,34 @@ async def handle_message(
     else:
         await append_session_message(user.id, "assistant", reply_text, session_id)
 
+    interaction_id = None
+    if db is not None:
+        # Learning telemetry must not make an otherwise healthy answer fail while
+        # a deployment is being migrated. The failed transaction is rolled back.
+        try:
+            interaction = await record_knowledge_interaction(
+                db,
+                user,
+                query=text,
+                intent=intent,
+                result_count=len(citations),
+                citation_count=len(citations),
+                confidence=confidence,
+                session_id=session_id,
+            )
+            await db.commit()
+            interaction_id = interaction.id
+        except Exception:  # noqa: BLE001 — telemetry is non-critical to the reply
+            await db.rollback()
+
     return AgentReply(
-        intent=intent, policy_tier=policy_tier, reply=reply_text, confidence=confidence, citations=citations, items=items
+        intent=intent,
+        policy_tier=policy_tier,
+        reply=reply_text,
+        confidence=confidence,
+        citations=citations,
+        items=items,
+        interaction_id=interaction_id,
     )
 
 

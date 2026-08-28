@@ -14,6 +14,7 @@ from app.agent_gateway import handle_voice_turn, load_session_messages, append_s
 from app.config import settings
 from app.db import get_db
 from app.deps import get_current_user
+from app.knowledge_learning import record_knowledge_interaction
 from app.models import User
 from app.schemas import KnowledgeCitationOut, ZennyVoiceTurnResponse
 from app.sarvam_voice_agent import VoiceAgentError, ask_text, voice_agent_ready
@@ -65,8 +66,25 @@ async def voice_turn(
             spoken = spoken_preview(reply)
             await append_session_message(user.id, "user", transcript, session_id)
             await append_session_message(user.id, "assistant", spoken, session_id)
+            interaction_id = None
+            try:
+                interaction = await record_knowledge_interaction(
+                    db,
+                    user,
+                    query=transcript,
+                    intent="chat",
+                    result_count=0,
+                    citation_count=0,
+                    confidence="verified",
+                    session_id=session_id,
+                )
+                await db.commit()
+                interaction_id = interaction.id
+            except Exception:  # noqa: BLE001 — telemetry must not break the voice turn
+                await db.rollback()
             return ZennyVoiceTurnResponse(
                 sessionId=session_id,
+                interactionId=interaction_id,
                 transcript=transcript,
                 spokenText=spoken,
                 intent="chat",
@@ -86,6 +104,7 @@ async def voice_turn(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="I couldn't hear a question in that.")
     return ZennyVoiceTurnResponse(
         sessionId=session_id,
+        interactionId=result.interaction_id,
         transcript=transcript,
         spokenText=result.reply,
         intent=result.intent,

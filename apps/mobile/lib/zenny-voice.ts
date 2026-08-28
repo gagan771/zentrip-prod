@@ -4,6 +4,7 @@ import * as Crypto from 'expo-crypto';
 
 export type ZennyVoiceTurn = {
   sessionId: string;
+  interactionId?: string | null;
   transcript: string;
   spokenText: string;
   intent: string;

@@ -208,6 +208,7 @@ export function useZennyCall() {
           data?: string;
           sampleRate?: number;
           spokenText?: string;
+          interactionId?: string | null;
           transcript?: string;
           items?: string[];
           message?: string;
@@ -240,7 +241,11 @@ export function useZennyCall() {
             const last = previous[previous.length - 1];
             if (last && last.spokenText === message.spokenText) {
               const copy = previous.slice();
-              copy[copy.length - 1] = { ...last, transcript: message.transcript || last.transcript };
+              copy[copy.length - 1] = {
+                ...last,
+                transcript: message.transcript || last.transcript,
+                interactionId: message.interactionId || last.interactionId,
+              };
               return copy;
             }
             return previous;

@@ -395,6 +395,58 @@ class KnowledgeModerationAudit(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 
 
+class KnowledgeInteraction(Base):
+    """Privacy-aware telemetry for questions answered by Zenny.
+
+    This is the input to the knowledge improvement loop. It records retrieval
+    quality and optional traveler feedback, not an LLM-generated fact. Query text
+    is retained so an editor can understand recurring gaps; the learning service
+    removes obvious email addresses and phone numbers before persisting it.
+    """
+
+    __tablename__ = "knowledge_interactions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    query_text: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_query: Mapped[str] = mapped_column(String(500), nullable=False, index=True)
+    intent: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    result_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    citation_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    answer_confidence: Mapped[str] = mapped_column(String(20), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(30), nullable=False, index=True)  # answered|no_match|low_confidence
+    feedback: Mapped[str | None] = mapped_column(String(20), nullable=True)  # helpful|not_helpful
+    feedback_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    feedback_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False, index=True)
+
+
+class KnowledgeGap(Base):
+    """Aggregated review queue item created by the improvement loop.
+
+    A gap becomes useful when it recurs or a traveler marks an answer unhelpful.
+    It never becomes published knowledge automatically: staff resolve it by
+    adding a sourced claim, alias, or operational observation through moderation.
+    """
+
+    __tablename__ = "knowledge_gaps"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    normalized_query: Mapped[str] = mapped_column(String(500), nullable=False, unique=True, index=True)
+    example_query: Mapped[str] = mapped_column(Text, nullable=False)
+    intent: Mapped[str] = mapped_column(String(30), nullable=False)
+    occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    no_match_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    negative_feedback_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=50, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open", index=True)  # open|in_progress|resolved|dismissed
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False, index=True)
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
+
+
 class Trail(Base):
     """Offline trail catalog entry; preview routes are never treated as navigation-ready."""
 

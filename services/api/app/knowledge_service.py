@@ -55,14 +55,13 @@ async def search_published_claims(
     if not tokens:
         return []
 
-    alias_entity_ids = select(KnowledgeAlias.entity_id).where(
-        KnowledgeAlias.alias.ilike(_like_pattern(normalized_query), escape="\\")
-    )
-
     async def _run(active_tokens: list[str]):
         token_filters = []
         for token in active_tokens:
             pattern = _like_pattern(token)
+            alias_entity_ids = select(KnowledgeAlias.entity_id).where(
+                KnowledgeAlias.alias.ilike(pattern, escape="\\")
+            )
             token_filters.append(
                 or_(
                     KnowledgeEntity.name.ilike(pattern, escape="\\"),

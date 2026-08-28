@@ -169,6 +169,7 @@ async def live_voice(websocket: WebSocket, ticket: str = Query(...)) -> None:
                 {
                     "type": "reply",
                     "sessionId": claim["sessionId"],
+                    "interactionId": str(result.interaction_id) if result.interaction_id else None,
                     "transcript": text,
                     "spokenText": result.reply,
                     "intent": result.intent,

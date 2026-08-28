@@ -1,16 +1,30 @@
-from fastapi import APIRouter, Depends, Query
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import desc, select
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.knowledge_service import search_published_claims
-from app.models import DestinationProfile, DestinationRoute, KnowledgeEntity, KnowledgeObservation, KnowledgeSource
+from app.knowledge_learning import record_knowledge_feedback
+from app.models import (
+    DestinationProfile,
+    DestinationRoute,
+    KnowledgeEntity,
+    KnowledgeInteraction,
+    KnowledgeObservation,
+    KnowledgeSource,
+    User,
+)
+from app.deps import get_current_user
 from app.schemas import (
     DestinationProfileOut,
     DestinationRouteOut,
     KnowledgeCitationOut,
     KnowledgeClaimOut,
+    KnowledgeInteractionFeedback,
+    KnowledgeInteractionOut,
     KnowledgeObservationOut,
     KnowledgeSearchResponse,
 )
@@ -29,6 +43,27 @@ _ESSENTIAL_TOPICS = {
     "food": "food_info",
     "planning": "planning_info",
 }
+
+
+@router.post("/interactions/{interaction_id}/feedback", response_model=KnowledgeInteractionOut)
+async def feedback_on_knowledge_interaction(
+    interaction_id: uuid.UUID,
+    body: KnowledgeInteractionFeedback,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> KnowledgeInteractionOut:
+    """Collect explicit helpful/not-helpful feedback for a prior Zenny answer."""
+    interaction = await db.scalar(
+        select(KnowledgeInteraction).where(
+            KnowledgeInteraction.id == interaction_id,
+            KnowledgeInteraction.user_id == user.id,
+        )
+    )
+    if interaction is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge interaction not found")
+    await record_knowledge_feedback(db, interaction, helpful=body.helpful, note=body.note)
+    await db.commit()
+    return KnowledgeInteractionOut(id=interaction.id, feedback=interaction.feedback, outcome=interaction.outcome)
 
 
 @router.get("/destinations", response_model=list[DestinationProfileOut])

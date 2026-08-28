@@ -41,6 +41,7 @@ Health check: `GET http://localhost:8000/health` → `{"status": "ok", ...}` (no
 | `app/comparison_service.py` | Provider-adapter contract, corridor demo adapters, and deterministic scoring |
 | `app/routers/compare.py` | `/v1/compare/search` and recommendation outcome endpoints |
 | `app/knowledge_service.py` | Citation-first published-claim retrieval for Guide/Zenny |
+| `app/knowledge_learning.py` | Records answer quality, aggregates recurring gaps, and builds the improvement report |
 | `app/routers/knowledge.py` | `GET /v1/knowledge/search` returns sourced published claims |
 | `app/seed.py` | Idempotently seeds cited Delhi/Agra/Jaipur starter knowledge — run with `python -m app.seed` |
 | `alembic/` | Migrations (async env, autogenerate-ready) |
@@ -102,6 +103,17 @@ remains inference-only, so this dataset is not silently uploaded to a provider.
 The original `KnowledgeEntity` fact remains as a concise legacy summary. Guide/Zenny retrieval **and itinerary candidates** now use `KnowledgeClaim` rows: each is one publishable fact linked to a `KnowledgeSource`, a source URL, verification state, language, and last-verified date. `GET /v1/knowledge/search?q=Amber%20Fort&city=Jaipur` returns only `published` claims from `active` sources and includes the citation the mobile UI should render.
 
 The seed is editorial content, not a crawler. It currently has a deliberately narrow UNESCO-backed corridor corpus and alternate names such as `Amer Fort`/`Amber Fort`. Facts with no usable source URL are retained as `needs_review` during the migration and cannot be returned by the endpoint. The next data increment is adding reviewed claims—not letting an LLM scrape or invent them. Semantic pgvector retrieval is intentionally deferred until the corpus is larger; exact-name and claim search is easier to audit at this stage.
+
+### Continuous quality loop
+
+Zenny records each question's retrieval result and returns an `interactionId` so
+the client can collect helpful/not-helpful feedback. Unanswered or weakly grounded
+Guide/payment/safety questions are aggregated into a staff-only gap queue. Review
+the queue with `/v1/moderation/knowledge/gaps`, inspect coverage metrics with
+`/v1/moderation/knowledge/improvement-report`, add a cited record through the
+existing moderation APIs, and then resolve the gap. The report worker can be run
+with `python -m scripts.knowledge_improvement_loop --watch`. User questions and
+LLM answers are never auto-published as knowledge.
 
 ## Twilio outbound onboarding
 
