@@ -40,8 +40,10 @@ export type ZennyAgentSession = {
 export type ZennyVoiceStatus = {
   agentReady: boolean;
   liveSttReady: boolean;
+  deepgramReady?: boolean;
   voiceLiveEnabled: boolean;
   livekitReady?: boolean;
+  knowledgeMode?: 'shared_gateway' | 'direct_provider' | string;
 };
 
 export type ZennyLivekitToken = {
@@ -81,11 +83,14 @@ export async function sendZennyVoiceTurn(uri: string, tripId?: string | null): P
   return apiFormRequest<ZennyVoiceTurn>('/v1/zenny/voice/turn', form);
 }
 
-export async function createZennyLiveSession(tripId?: string | null): Promise<ZennyLiveSession> {
+export async function createZennyLiveSession(
+  tripId?: string | null,
+  sttProvider: 'auto' | 'deepgram' | 'sarvam' = 'auto',
+): Promise<ZennyLiveSession> {
   const sessionId = await getVoiceSessionId();
   return apiRequest<ZennyLiveSession>('/v1/zenny/voice/live/session', {
     method: 'POST',
-    body: { sessionId, tripId: tripId || undefined },
+    body: { sessionId, tripId: tripId || undefined, sttProvider },
   });
 }
 

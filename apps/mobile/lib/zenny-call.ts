@@ -19,11 +19,13 @@ import {
 } from './speech';
 import {
   createZennyAgentSession,
+  createZennyLiveSession,
   createZennyLivekitToken,
   getVoiceSessionId,
   getZennyVoiceStatus,
   sendZennyVoiceTurn,
   zennyAgentSocketUrl,
+  zennyLiveSocketUrl,
   type ZennyVoiceTurn,
 } from './zenny-voice';
 import { useStore } from '../store/useStore';
@@ -55,7 +57,10 @@ export function useZennyCall() {
   const [pending, setPending] = useState(false);
   const [partial, setPartial] = useState('');
   const [agentReady, setAgentReady] = useState(false);
+  const [liveSttReady, setLiveSttReady] = useState(false);
+  const [deepgramReady, setDeepgramReady] = useState(false);
   const [livekitReady, setLivekitReady] = useState(false);
+  const [knowledgeMode, setKnowledgeMode] = useState('shared_gateway');
 
   const recorderRef = useRef(recorder);
   const phaseRef = useRef<CallPhase>('idle');
@@ -85,7 +90,10 @@ export function useZennyCall() {
       .then((status) => {
         if (!cancelled) {
           setAgentReady(status.agentReady);
+          setLiveSttReady(Boolean(status.liveSttReady));
+          setDeepgramReady(Boolean(status.deepgramReady));
           setLivekitReady(Boolean(status.livekitReady));
+          setKnowledgeMode(status.knowledgeMode || 'shared_gateway');
         }
       })
       .catch(() => {
@@ -286,6 +294,140 @@ export function useZennyCall() {
     updatePhase('live');
   }, [teardownDuplex, tripId, updatePhase]);
 
+  const startDeepgramLive = useCallback(async () => {
+    setError(null);
+    updatePhase('connecting');
+    stopSpeaking();
+    stopPcmPlayback();
+    const permission = await requestRecordingPermissionsAsync();
+    if (!permission.granted) throw new Error('Microphone permission is needed to talk to Zenny.');
+    await setAudioModeAsync(CALL_AUDIO_MODE);
+    const session = await createZennyLiveSession(tripId, 'deepgram');
+    const socket = new WebSocket(zennyLiveSocketUrl(session));
+    socket.binaryType = 'arraybuffer';
+    socketRef.current = socket;
+    duplexRef.current = true;
+    modeRef.current = 'duplex';
+    setMode('duplex');
+
+    await new Promise<void>((resolve, reject) => {
+      const fail = (message: string) => reject(new Error(message));
+      socket.onopen = () => resolve();
+      socket.onerror = () => fail('Could not reach Zenny. Check you are on the same network as the API.');
+      socket.onclose = (event) => {
+        if (phaseRef.current === 'connecting') fail(`Zenny hung up (${event.code}).`);
+      };
+      setTimeout(() => {
+        if (socket.readyState !== WebSocket.OPEN) fail('Zenny took too long to answer.');
+      }, 12000);
+    });
+
+    let streamedTurnIndex = -1;
+    socket.onmessage = (event) => {
+      if (typeof event.data !== 'string') return;
+      try {
+        const message = JSON.parse(event.data) as {
+          type?: string;
+          text?: string;
+          message?: string;
+          transcript?: string;
+          spokenText?: string;
+          interactionId?: string | null;
+          sessionId?: string;
+          intent?: string;
+          policyTier?: string;
+          confidence?: string;
+          citations?: ZennyVoiceTurn['citations'];
+          items?: string[];
+          brain?: string;
+          phase?: string;
+        };
+        if (message.type === 'status' && message.phase === 'speaking') updatePhase('speaking');
+        if (message.type === 'status' && message.phase === 'listening' && duplexRef.current) {
+          updatePhase('live');
+        }
+        if ((message.type === 'partial' || message.type === 'final') && message.text) {
+          setPartial(message.text);
+        }
+        if (message.type === 'speak' && message.text) {
+          setPartial('');
+          setTurns((previous) => {
+            const index = streamedTurnIndex >= 0 ? streamedTurnIndex : previous.length;
+            const next = previous.slice();
+            const existing = next[index];
+            next[index] = existing
+              ? { ...existing, spokenText: `${existing.spokenText} ${message.text}`.trim() }
+              : {
+                  sessionId: session.sessionId,
+                  transcript: '',
+                  spokenText: message.text || '',
+                  intent: 'chat',
+                  policyTier: 'no_confirmation',
+                  confidence: 'estimated',
+                  citations: [],
+                  items: [],
+                  brain: 'zentrip-shared-knowledge-gateway',
+                };
+            streamedTurnIndex = index;
+            return next;
+          });
+          updatePhase('speaking');
+        }
+        if (message.type === 'reply' && message.spokenText) {
+          setTurns((previous) => {
+            const index = streamedTurnIndex >= 0 ? streamedTurnIndex : previous.length;
+            const next = previous.slice();
+            const existing = next[index];
+            next[index] = {
+              sessionId: message.sessionId || existing?.sessionId || session.sessionId,
+              transcript: message.transcript || existing?.transcript || '',
+              spokenText: message.spokenText || existing?.spokenText || '',
+              interactionId: message.interactionId ?? existing?.interactionId,
+              intent: message.intent || existing?.intent || 'chat',
+              policyTier: message.policyTier || existing?.policyTier || 'no_confirmation',
+              confidence: message.confidence || existing?.confidence || 'estimated',
+              citations: message.citations || existing?.citations || [],
+              items: message.items || existing?.items || [],
+              brain: message.brain || existing?.brain || 'zentrip-shared-knowledge-gateway',
+            };
+            return next;
+          });
+          streamedTurnIndex = -1;
+          void speakAsync(message.spokenText, 'en-IN').catch(() => undefined);
+        }
+        if (message.type === 'interrupt') {
+          stopPcmPlayback();
+          stopSpeaking();
+          updatePhase('live');
+        }
+        if (message.type === 'error' && message.message) setError(message.message);
+      } catch {
+        // Ignore a malformed frame.
+      }
+    };
+    socket.onclose = () => {
+      if (!duplexRef.current) return;
+      duplexRef.current = false;
+      void teardownDuplex().then(() => updatePhase('idle'));
+    };
+
+    const stopMic = await startPcmMic({
+      onFrame: (pcm, nextLevel) => {
+        setLevel(nextLevel);
+        if (socket.readyState !== WebSocket.OPEN) return;
+        try {
+          socket.send(pcmToArrayBuffer(pcm));
+        } catch {
+          // Drop a frame rather than killing the call.
+        }
+      },
+      onError: (message) => setError(message),
+    });
+    stopMicRef.current = stopMic;
+    startedAt.current = Date.now();
+    updatePhase('live');
+  }, [teardownDuplex, tripId, updatePhase]);
+
   const startListening = useCallback(async () => {
     setError(null);
     updatePhase('connecting');
@@ -342,11 +484,15 @@ export function useZennyCall() {
     if (busy.current) return;
     busy.current = true;
     try {
-      if (livekitReady && livekitNativeAvailable()) {
+      if (knowledgeMode === 'shared_gateway' && deepgramReady && pcmStreamingSupported()) {
+        await startDeepgramLive();
+        return;
+      }
+      if (knowledgeMode !== 'shared_gateway' && livekitReady && livekitNativeAvailable()) {
         await startLivekit();
         return;
       }
-      if (agentReady && pcmStreamingSupported()) {
+      if (knowledgeMode !== 'shared_gateway' && agentReady && pcmStreamingSupported()) {
         await startDuplex();
         return;
       }
@@ -355,7 +501,7 @@ export function useZennyCall() {
       await teardownDuplex();
       updatePhase('idle');
       const raw = caught instanceof Error ? caught.message : 'Unable to open the microphone.';
-      if (livekitReady) {
+      if ((knowledgeMode === 'shared_gateway' && deepgramReady) || (knowledgeMode !== 'shared_gateway' && (liveSttReady || livekitReady))) {
         setError(`${raw} Falling back to tap-to-talk.`);
         try {
           await startListening();
@@ -365,7 +511,7 @@ export function useZennyCall() {
           return;
         }
       }
-      if (agentReady && /PCM live mic is not in this native build/i.test(raw)) {
+      if (knowledgeMode !== 'shared_gateway' && agentReady && /PCM live mic is not in this native build/i.test(raw)) {
         setError(null);
         try {
           await startListening();
@@ -375,7 +521,7 @@ export function useZennyCall() {
           return;
         }
       }
-      if (agentReady && pcmStreamingSupported()) {
+      if (knowledgeMode !== 'shared_gateway' && agentReady && pcmStreamingSupported()) {
         setError(`${raw} Falling back to tap-to-talk.`);
         try {
           await startListening();
@@ -389,7 +535,7 @@ export function useZennyCall() {
     } finally {
       busy.current = false;
     }
-  }, [agentReady, livekitReady, startDuplex, startListening, startLivekit, teardownDuplex, updatePhase]);
+  }, [agentReady, deepgramReady, knowledgeMode, liveSttReady, livekitReady, startDeepgramLive, startDuplex, startListening, startLivekit, teardownDuplex, updatePhase]);
 
   const toggleTalk = useCallback(async () => {
     if (busy.current) return;
@@ -436,13 +582,17 @@ export function useZennyCall() {
     mode,
     duplex: mode === 'duplex' && phase !== 'idle',
     agentReady,
+    knowledgeMode,
     turns,
     error,
     level,
     pending,
     partial,
     inCall: phase !== 'idle',
-    canDuplex: (livekitReady && livekitNativeAvailable()) || (agentReady && pcmStreamingSupported()),
+    canDuplex:
+      (knowledgeMode === 'shared_gateway' && deepgramReady && pcmStreamingSupported()) ||
+      (knowledgeMode !== 'shared_gateway' && livekitReady && livekitNativeAvailable()) ||
+      (knowledgeMode !== 'shared_gateway' && agentReady && pcmStreamingSupported()),
     startCall,
     endCall,
     nudge: toggleTalk,

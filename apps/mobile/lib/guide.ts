@@ -27,6 +27,9 @@ export type DestinationRecommendation = {
   experienceTags: string[];
   source: GuideCitation;
   tradeoffs: string[];
+  accessNotes?: string | null;
+  safetyNotes?: string | null;
+  operationalWarnings?: string[];
 };
 
 export type DestinationRecommendationsResult = {
@@ -34,6 +37,7 @@ export type DestinationRecommendationsResult = {
   profile: Record<string, unknown>;
   month: number | null;
   provenance: string;
+  interactionId?: string | null;
 };
 
 export function recommendDestinations(params: {

@@ -1,7 +1,7 @@
 import { router, useFocusEffect } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -45,6 +45,7 @@ export default function CompanionScreen() {
     partial,
     inCall,
     canDuplex,
+    knowledgeMode,
     startCall,
     toggleTalk,
     endCall,
@@ -211,6 +212,30 @@ export default function CompanionScreen() {
             </Pressable>
           ) : null}
 
+          {turn?.citations?.length ? (
+            <Pressable
+              style={styles.sourceCard}
+              disabled={!turn.citations[0]?.sourceUrl}
+              onPress={() => {
+                const url = turn.citations[0]?.sourceUrl;
+                if (url) void Linking.openURL(url);
+              }}
+            >
+              <Ionicons name="shield-checkmark-outline" size={16} color={colors.sageDark} />
+              <View style={styles.sourceCopy}>
+                <Text style={styles.sourceTitle}>
+                  Grounded in {turn.citations.length} reviewed source{turn.citations.length === 1 ? '' : 's'}
+                </Text>
+                <Text style={styles.sourceDetail} numberOfLines={1}>
+                  {turn.citations[0].sourceName} · {turn.confidence}
+                </Text>
+              </View>
+              {turn.citations[0].sourceUrl ? (
+                <Ionicons name="open-outline" size={14} color={colors.sageDark} />
+              ) : null}
+            </Pressable>
+          ) : null}
+
           {inCall ? (
             <Pressable style={styles.hangUp} onPress={handleEndCall}>
               <Ionicons name="call" size={18} color={colors.white} style={styles.hangUpIcon} />
@@ -219,7 +244,7 @@ export default function CompanionScreen() {
           ) : (
             <Text style={styles.privacy}>
               {canDuplex || mode === 'duplex'
-                ? 'Live call over LiveKit. Speak naturally. Hang up anytime.'
+                ? `Live voice via ${knowledgeMode === 'shared_gateway' ? 'Zenny’s shared travel brain' : 'voice provider'}. Speak naturally. Hang up anytime.`
                 : 'Tap Zenny in the grass. Speak, tap again to send, hang up anytime.'}
             </Text>
           )}
@@ -390,6 +415,30 @@ const styles = StyleSheet.create({
     color: colors.white,
     fontSize: typography.fontSize.caption,
     fontWeight: '700',
+  },
+  sourceCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(255, 252, 247, 0.9)',
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    maxWidth: 340,
+  },
+  sourceCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  sourceTitle: {
+    color: colors.ink,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '800',
+  },
+  sourceDetail: {
+    color: colors.sageDark,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '600',
   },
   hangUp: {
     flexDirection: 'row',

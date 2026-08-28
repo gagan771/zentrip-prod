@@ -212,6 +212,14 @@ export default function GuideScreen() {
         <TouchableOpacity style={styles.primaryBtn} onPress={requestPermission} activeOpacity={0.85}>
           <Text style={styles.primaryBtnText}>Enable Camera Access</Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.destinationBtn}
+          onPress={() => router.push('/recommendations/index')}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="map-outline" size={18} color={colors.primary} />
+          <Text style={styles.destinationBtnText}>Find my next Indian destination</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -362,6 +370,14 @@ export default function GuideScreen() {
                 );
               })}
             </View>
+            <TouchableOpacity
+              style={styles.destinationShortcut}
+              onPress={() => router.push('/recommendations/index')}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="sparkles-outline" size={14} color="#F4D6A4" />
+              <Text style={styles.destinationShortcutText}>Destination ideas</Text>
+            </TouchableOpacity>
           </View>
 
           {(placeParam || city) ? (
@@ -526,6 +542,25 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSize.body,
     fontWeight: '700',
   },
+  destinationBtn: {
+    minHeight: 46,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.white,
+    paddingHorizontal: spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+    marginTop: spacing.xs,
+    width: '100%',
+  },
+  destinationBtnText: {
+    color: colors.primary,
+    fontSize: typography.fontSize.body,
+    fontWeight: '700',
+  },
 
   cameraWrap: {
     flex: 1,
@@ -549,6 +584,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: 6,
     gap: 6,
+  },
+  destinationShortcut: {
+    marginTop: spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(20, 24, 27, 0.75)',
+    borderRadius: radii.full,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+  },
+  destinationShortcutText: {
+    color: '#F4D6A4',
+    fontSize: typography.fontSize.micro,
+    fontWeight: '800',
   },
   cityFilterLabel: {
     color: '#E8D2AA',
