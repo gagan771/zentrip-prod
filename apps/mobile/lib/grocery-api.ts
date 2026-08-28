@@ -5,11 +5,8 @@ import { apiRequest } from './api-client';
  * (see 05-india-services-layer-grocery-integration.md). Mirrors
  * kmkb-mobile-app's utils/api.ts saveXSession functions.
  *
- * The `/v1/grocery/*` routes don't exist on the Zentrip backend yet — per the
- * spec this needs Annapurna's mobile grocery-list logic folded into a
- * services/grocery module. Until then these calls 404/throw, which is fine:
- * every call site already treats session-save as fire-and-forget and
- * catches the rejection, same as upstream.
+ * The backend persists these hand-off snapshots so a provider flow can be
+ * resumed/audited without storing provider credentials or payment details.
  */
 export interface GroceryCartItem {
   searched_for: string;

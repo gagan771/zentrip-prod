@@ -27,6 +27,13 @@ import type { ComponentType } from 'react';
 import type { ImageSourcePropType } from 'react-native';
 
 import type { DeviceCoords } from './webview-geolocation';
+import {
+  BigBasketCartButton,
+  DMartCartButton,
+  FreshToHomeCartButton,
+  JioMartCartButton,
+  LiciousCartButton,
+} from '../components/grocery/GenericGroceryWebViewButton';
 import { BlinkitCartButton } from '../components/grocery/BlinkitCartButton';
 import { FlipkartCartButton } from '../components/grocery/FlipkartCartButton';
 import { ZeptoCartButton } from '../components/grocery/ZeptoCartButton';
@@ -51,7 +58,16 @@ export interface GroceryCartButtonProps {
   initialCoords?: DeviceCoords;
 }
 
-export type GroceryProviderKey = 'blinkit' | 'flipkart' | 'zepto' | 'swiggy_instamart';
+export type GroceryProviderKey =
+  | 'blinkit'
+  | 'flipkart'
+  | 'zepto'
+  | 'swiggy_instamart'
+  | 'bigbasket'
+  | 'dmart'
+  | 'jiomart'
+  | 'licious'
+  | 'freshtohome';
 
 /**
  * The adapter interface for this domain: not "fetch results," but "which
@@ -61,7 +77,8 @@ export interface GroceryProviderAdapter {
   key: GroceryProviderKey;
   displayName: string;
   Component: ComponentType<GroceryCartButtonProps>;
-  logo: ImageSourcePropType;
+  logo?: ImageSourcePropType;
+  icon?: string;
 }
 
 export const GROCERY_ADAPTERS: GroceryProviderAdapter[] = [
@@ -89,4 +106,9 @@ export const GROCERY_ADAPTERS: GroceryProviderAdapter[] = [
     Component: SwiggyInstamartCartButton,
     logo: require('../assets/grocery/swiggy-instamart.png'),
   },
+  { key: 'bigbasket', displayName: 'BigBasket', Component: BigBasketCartButton },
+  { key: 'dmart', displayName: 'DMart Ready', Component: DMartCartButton },
+  { key: 'jiomart', displayName: 'JioMart', Component: JioMartCartButton },
+  { key: 'licious', displayName: 'Licious', Component: LiciousCartButton },
+  { key: 'freshtohome', displayName: 'FreshToHome', Component: FreshToHomeCartButton },
 ];
