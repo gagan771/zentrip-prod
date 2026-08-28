@@ -3,6 +3,7 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -10,25 +11,38 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useLocalSearchParams } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { colors } from '../../../lib/theme';
-import { getDeviceLocation, type DeviceCoords } from '../../../lib/webview-geolocation';
 import Analytics from '../../../lib/analytics';
 import { GROCERY_ADAPTERS, type GroceryItem as GroceryListItem } from '../../../lib/grocery-adapters';
-
-/**
- * Ad-hoc grocery hand-off — the traveler persona from
- * 05-india-services-layer-grocery-integration.md ("I need toothpaste and a
- * USB-C charger"), not a meal-plan-derived list. Items are typed in here and
- * handed to whichever quick-commerce provider the traveler picks; each
- * provider button owns its own WebView search-and-add flow (see
- * ../../../lib/grocery-adapters.ts for the provider registry).
- */
+import { colors, radii, shadows, spacing, typography } from '../../../lib/theme';
+import { getDeviceLocation, type DeviceCoords } from '../../../lib/webview-geolocation';
 
 type DraftItem = { id: string; name: string };
 
+const ESSENTIAL_PRESETS = [
+  '💧 Packaged Mineral Water',
+  '🧴 Odomos Mosquito Spray',
+  '⚡ Electral ORS Sachets',
+  '🔌 Universal Plug Adapter',
+  '🧻 Sanitizing Hand Wipes',
+  '🩹 First Aid & Bandages',
+  '🧴 Sunscreen SPF 50',
+];
+
 export default function GroceryServiceScreen() {
-  const [items, setItems] = useState<DraftItem[]>([]);
+  const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{ items?: string | string[] }>();
+  const [items, setItems] = useState<DraftItem[]>(() => {
+    const raw = Array.isArray(params.items) ? params.items[0] : params.items;
+    if (!raw) return [];
+    return raw
+      .split('|')
+      .map((name) => name.trim())
+      .filter(Boolean)
+      .map((name) => ({ id: `${Date.now()}-${name}`, name }));
+  });
   const [draft, setDraft] = useState('');
   const [deviceCoords, setDeviceCoords] = useState<DeviceCoords | null>(null);
 
@@ -36,11 +50,11 @@ export default function GroceryServiceScreen() {
     getDeviceLocation({ silent: true }).then(setDeviceCoords).catch(() => {});
   }, []);
 
-  const addItem = () => {
-    const name = draft.trim();
+  const addItem = (customName?: string) => {
+    const name = (customName || draft).trim();
     if (!name) return;
-    setItems((prev) => [...prev, { id: `${Date.now()}`, name }]);
-    setDraft('');
+    setItems((prev) => [...prev, { id: `${Date.now()}-${Math.random()}`, name }]);
+    if (!customName) setDraft('');
   };
 
   const removeItem = (id: string) => {
@@ -62,105 +76,283 @@ export default function GroceryServiceScreen() {
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <View style={styles.header}>
-        <Text style={styles.title}>What do you need?</Text>
-        <Text style={styles.subtitle}>Add items, then open one of the quick-commerce apps below to buy them.</Text>
+      <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
+        <View style={styles.badgeRow}>
+          <Ionicons name="flash-outline" size={12} color={colors.primary} />
+          <Text style={styles.eyebrow}>10-MINUTE QUICK COMMERCE</Text>
+        </View>
+        <Text style={styles.title}>Travel Essentials Handoff</Text>
+        <Text style={styles.subtitle}>
+          Add what you need, then export into Blinkit, Zepto, Swiggy Instamart, Flipkart Minutes, BigBasket, DMart, JioMart, Licious, or FreshToHome.
+        </Text>
       </View>
 
+      {/* Input Bar */}
       <View style={styles.inputRow}>
-        <TextInput
-          style={styles.input}
-          value={draft}
-          onChangeText={setDraft}
-          placeholder="e.g. toothpaste, USB-C charger"
-          placeholderTextColor={colors.textSecondary}
-          onSubmitEditing={addItem}
-          returnKeyType="done"
-        />
-        <TouchableOpacity style={styles.addBtn} onPress={addItem} activeOpacity={0.7}>
-          <Ionicons name="add" size={22} color="#fff" />
+        <View style={styles.inputWrapper}>
+          <Ionicons name="search-outline" size={16} color={colors.inkMuted} style={styles.inputIcon} />
+          <TextInput
+            style={styles.input}
+            value={draft}
+            onChangeText={setDraft}
+            placeholder="Add item (e.g. toothpaste, charger...)"
+            placeholderTextColor={colors.inkSubtle}
+            onSubmitEditing={() => addItem()}
+            returnKeyType="done"
+          />
+        </View>
+        <TouchableOpacity style={styles.addBtn} onPress={() => addItem()} activeOpacity={0.8}>
+          <Ionicons name="add" size={24} color={colors.white} />
         </TouchableOpacity>
       </View>
 
+      {/* Preset Travel Essentials Horizontal Chips */}
+      <View style={styles.presetSection}>
+        <Text style={styles.presetTitle}>POPULAR TRAVEL ESSENTIALS</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.presetRow}>
+          {ESSENTIAL_PRESETS.map((preset) => (
+            <TouchableOpacity
+              key={preset}
+              style={styles.presetChip}
+              onPress={() => addItem(preset)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.presetText}>+ {preset}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      </View>
+
+      {/* Items List */}
       <FlatList
         style={styles.list}
         data={items}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
-        ListEmptyComponent={<Text style={styles.emptyText}>No items yet — add something above.</Text>}
+        ListEmptyComponent={
+          <View style={styles.emptyState}>
+            <Ionicons name="cart-outline" size={36} color={colors.inkSubtle} />
+            <Text style={styles.emptyTitle}>Your cart is empty</Text>
+            <Text style={styles.emptySubtitle}>
+              Tap any popular essential above or type items to generate your shopping list.
+            </Text>
+          </View>
+        }
         renderItem={({ item }) => (
           <View style={styles.itemRow}>
+            <View style={styles.itemBullet} />
             <Text style={styles.itemName}>{item.name}</Text>
-            <TouchableOpacity onPress={() => removeItem(item.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Ionicons name="close" size={18} color={colors.textSecondary} />
+            <TouchableOpacity
+              onPress={() => removeItem(item.id)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons name="close-circle-outline" size={20} color={colors.inkMuted} />
             </TouchableOpacity>
           </View>
         )}
       />
 
-      <View style={styles.providerStrip}>
-        {GROCERY_ADAPTERS.map(({ key, Component }) => (
-          <Component
-            key={key}
-            initialCoords={deviceCoords ?? undefined}
-            groceryList={groceryList}
-            onItemAdded={(added) => markBought(added.item_name)}
-            onOpen={() => Analytics.grocery.platformOpened(key)}
-            onClose={() => Analytics.grocery.exported(key)}
-          />
-        ))}
+      {/* Provider Handoff Strip */}
+      <View style={[styles.providerStrip, { paddingBottom: insets.bottom + spacing.sm }]}>
+        <View style={styles.providerStripHeader}>
+          <Ionicons name="open-outline" size={14} color={colors.primary} />
+          <Text style={styles.providerStripTitle}>SELECT DELIVERY PLATFORM</Text>
+        </View>
+        <View style={styles.adapterButtonsRow}>
+          {GROCERY_ADAPTERS.map(({ key, Component }) => (
+            <Component
+              key={key}
+              initialCoords={deviceCoords ?? undefined}
+              groceryList={groceryList}
+              onItemAdded={(added) => markBought(added.item_name)}
+              onOpen={() => Analytics.grocery.platformOpened(key)}
+              onClose={() => Analytics.grocery.exported(key)}
+            />
+          ))}
+        </View>
       </View>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  header: { padding: 20, gap: 4 },
-  title: { fontSize: 22, fontWeight: '700', color: colors.textPrimary },
-  subtitle: { fontSize: 14, color: colors.textSecondary },
-  inputRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 20, marginBottom: 8 },
-  input: {
+  container: {
     flex: 1,
+    backgroundColor: colors.background,
+  },
+  header: {
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.sm,
+    gap: 4,
+  },
+  badgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: colors.primarySoft,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+    borderRadius: radii.full,
+    alignSelf: 'flex-start',
+    marginBottom: 2,
+  },
+  eyebrow: {
+    color: colors.primary,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+  },
+  title: {
+    fontSize: typography.fontSize.hero,
+    fontWeight: '800',
+    color: colors.ink,
+    letterSpacing: -0.4,
+  },
+  subtitle: {
+    fontSize: typography.fontSize.caption,
+    color: colors.inkMuted,
+    lineHeight: 18,
+  },
+
+  inputRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    marginVertical: spacing.xs,
+  },
+  inputWrapper: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.card,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    fontSize: 15,
-    color: colors.textPrimary,
-    backgroundColor: colors.card,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
+    height: 48,
+    ...shadows.sm,
+  },
+  inputIcon: {
+    marginRight: spacing.sm,
+  },
+  input: {
+    flex: 1,
+    fontSize: typography.fontSize.body,
+    color: colors.ink,
+    height: '100%',
   },
   addBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 10,
+    width: 48,
+    height: 48,
+    borderRadius: radii.md,
     backgroundColor: colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
+    ...shadows.sm,
   },
-  list: { flex: 1 },
-  listContent: { paddingHorizontal: 20, paddingTop: 8, gap: 8 },
-  emptyText: { color: colors.textSecondary, fontSize: 14, paddingTop: 24, textAlign: 'center' },
+
+  presetSection: {
+    paddingHorizontal: spacing.lg,
+    marginVertical: spacing.xs,
+    gap: 6,
+  },
+  presetTitle: {
+    color: colors.inkSubtle,
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  presetRow: {
+    gap: spacing.xs,
+  },
+  presetChip: {
+    backgroundColor: colors.cardWarm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: radii.full,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  presetText: {
+    color: colors.ink,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '600',
+  },
+
+  list: {
+    flex: 1,
+  },
+  listContent: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    gap: spacing.xs,
+  },
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.xxl,
+    gap: spacing.xs,
+  },
+  emptyTitle: {
+    color: colors.ink,
+    fontSize: typography.fontSize.headline,
+    fontWeight: '700',
+  },
+  emptySubtitle: {
+    color: colors.inkMuted,
+    fontSize: typography.fontSize.caption,
+    textAlign: 'center',
+    maxWidth: 260,
+  },
   itemRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     backgroundColor: colors.card,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 10,
-    paddingHorizontal: 14,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
     paddingVertical: 12,
+    gap: spacing.sm,
+    ...shadows.sm,
   },
-  itemName: { fontSize: 15, color: colors.textPrimary, flex: 1, marginRight: 8 },
+  itemBullet: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.primary,
+  },
+  itemName: {
+    fontSize: typography.fontSize.body,
+    color: colors.ink,
+    fontWeight: '600',
+    flex: 1,
+  },
+
   providerStrip: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    padding: 12,
+    padding: spacing.md,
+    backgroundColor: colors.card,
     borderTopWidth: 1,
     borderTopColor: colors.border,
-    backgroundColor: colors.background,
+    gap: spacing.xs,
+    ...shadows.lg,
+  },
+  providerStripHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 4,
+  },
+  providerStripTitle: {
+    color: colors.primary,
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  adapterButtonsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
   },
 });
+

@@ -1,4 +1,8 @@
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+import { colors, radii, shadows, spacing, typography } from '../lib/theme';
 
 type FeaturePlaceholderProps = {
   featureNumber: string;
@@ -8,58 +12,113 @@ type FeaturePlaceholderProps = {
   description: string;
 };
 
-/**
- * Shared shell for every feature screen that hasn't been built yet.
- * Real screens replace this once their phase (see 00-engineering-phase-roadmap.md) starts.
- */
 export function FeaturePlaceholder({ featureNumber, title, phase, doc, description }: FeaturePlaceholderProps) {
+  const insets = useSafeAreaInsets();
+
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <View style={styles.badgeRow}>
-        <Text style={styles.badge}>Feature {featureNumber}</Text>
-        <Text style={styles.badge}>{phase}</Text>
+    <ScrollView
+      style={styles.screenWrapper}
+      contentContainerStyle={[
+        styles.container,
+        { paddingTop: insets.top + spacing.md, paddingBottom: spacing.xxxl },
+      ]}
+      showsVerticalScrollIndicator={false}
+    >
+      <View style={styles.card}>
+        <View style={styles.badgeRow}>
+          <View style={styles.featureBadge}>
+            <Ionicons name="sparkles" size={10} color={colors.primary} />
+            <Text style={styles.featureBadgeText}>MODULE {featureNumber}</Text>
+          </View>
+          <View style={styles.phaseBadge}>
+            <Text style={styles.phaseBadgeText}>{phase.toUpperCase()}</Text>
+          </View>
+        </View>
+
+        <Text style={styles.title}>{title}</Text>
+        <Text style={styles.description}>{description}</Text>
+
+        <View style={styles.specBox}>
+          <Ionicons name="document-text-outline" size={14} color={colors.inkMuted} />
+          <Text style={styles.docRef}>Architectural Spec: zentrip-feature-specs/{doc}</Text>
+        </View>
       </View>
-      <Text style={styles.title}>{title}</Text>
-      <Text style={styles.description}>{description}</Text>
-      <Text style={styles.docRef}>Full spec: zentrip-feature-specs/{doc}</Text>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
+  screenWrapper: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
   container: {
-    flexGrow: 1,
-    padding: 24,
-    gap: 12,
+    paddingHorizontal: spacing.lg,
+  },
+  card: {
+    backgroundColor: colors.card,
+    borderRadius: radii.xl,
+    padding: spacing.xl,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: spacing.md,
+    ...shadows.md,
   },
   badgeRow: {
     flexDirection: 'row',
-    gap: 8,
+    alignItems: 'center',
+    gap: spacing.xs,
   },
-  badge: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#6B5A2A',
-    backgroundColor: '#F1EAD6',
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 4,
-    overflow: 'hidden',
+  featureBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: colors.primarySoft,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+    borderRadius: radii.full,
+  },
+  featureBadgeText: {
+    fontSize: typography.fontSize.micro,
+    fontWeight: '800',
+    color: colors.primary,
+    letterSpacing: 1.2,
+  },
+  phaseBadge: {
+    backgroundColor: colors.cardWarm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+    borderRadius: radii.full,
+  },
+  phaseBadgeText: {
+    fontSize: typography.fontSize.micro,
+    fontWeight: '700',
+    color: colors.inkMuted,
   },
   title: {
-    fontSize: 24,
-    fontWeight: '700',
-    marginTop: 8,
+    fontSize: typography.fontSize.hero,
+    fontWeight: '800',
+    color: colors.ink,
+    letterSpacing: -0.4,
   },
   description: {
-    fontSize: 15,
-    lineHeight: 22,
-    color: '#3A3A3A',
+    fontSize: typography.fontSize.body,
+    lineHeight: typography.lineHeight.body,
+    color: colors.inkMuted,
+  },
+  specBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.cardWarm,
+    padding: spacing.md,
+    borderRadius: radii.md,
+    marginTop: spacing.xs,
   },
   docRef: {
-    marginTop: 12,
-    fontSize: 12,
-    fontFamily: 'monospace',
-    color: '#8A8A8A',
+    fontSize: typography.fontSize.micro,
+    color: colors.inkMuted,
+    fontWeight: '600',
   },
 });
+
