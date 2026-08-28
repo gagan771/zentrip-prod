@@ -1,8 +1,11 @@
 # Zentrip Project Memory
 
-Updated: 2026-08-26 (third same-day pass — parallel multi-agent push: search_stays wired into
-Companion, services→grocery hand-off, Payment Assistance, Journey/Booking Hub timeline, grocery
-ServiceProviderAdapter refactor, and the voice pipeline's first successful end-to-end run)
+Updated: 2026-08-26 (completion pass — native trail route rendering added; licensed trail
+data remains external): all 8 agent intents now have real tools:
+safety via KB + emergency fast-path, translation via offline phrasebook, community
+demo events with stale-hiding, buddy deterministic V1 scoring; plus the structural
+fix of knowledge_service's AND-across-tokens fragility and the mobile services→grocery
+deep-link)
 
 ## Product direction
 
@@ -107,18 +110,16 @@ Current model decision:
     left `["how", "pay", "upi", "here"]` as search tokens, and the search is a strict AND across all
     tokens — "how" and "here" matched nothing in the seeded content, so genuine content silently
     returned zero results. Expanded the stopword list to fix the specific case, which is
-    live-verified working now. **Known remaining limitation**: this is a stopword patch, not a fix
-    to the underlying AND-across-all-tokens fragility — a differently-phrased query ("can foreign
-    travelers use UPI") still fails because "use" isn't a stopword and doesn't appear in the seeded
-    claim text. A real fix would relax matching to "most tokens" rather than "all tokens," which
-    wasn't done this pass (bigger behavioral change to a shared, already-relied-on function; out of
-    scope for a payment-content pass).
-  - Live-verified: "how do I pay with UPI here" → correct grounded answer with 2 citations; "tell
+    live-verified working now. **Resolved (fourth pass)**: the underlying AND-across-all-tokens
+    fragility is now fixed structurally in knowledge_service.py (progressive token relaxation +
+    punctuation stripping) — see Backend foundation. The "can foreign travelers use UPI" case
+    verifiably works now.
+   - Live-verified: "how do I pay with UPI here" → correct grounded answer with 2 citations; "tell
     me about the Taj Mahal" still works unchanged (regression check on the stopword-list change).
 - `services` intent now does real (heuristic, not LLM) item extraction instead of returning skeleton
   text — closes the backend half of "grocery hand-off triggered by natural language":
-  - `app/agent_gateway.py`: `_extract_service_items()` strips a known lead-in phrase ("I need ", "can
-    you get me ", etc.) then splits on and/,/&. `AgentReply` gained an `items: list[str]` field
+  - `app/agent_gateway.py`: `_extract_service_items()` strips a known lead-in phrase ("I need ",
+    "can you get me ", etc.) then splits on and/,/&. `AgentReply` gained an `items: list[str]` field
     (empty for every intent except `services`), threaded through `AgentMessageResponse`
     (`routers/agent.py`) and `ZennyVoiceTurnResponse` (`schemas.py`/`routers/zenny_voice.py`) so both
     the text-chat and voice paths expose it.
@@ -126,10 +127,54 @@ Current model decision:
     charger"]` with a reply naming all 4 ported grocery providers. Known heuristic limitation (by
     design, documented in the function's docstring): "I need to buy something" extracts `["something"]`
     — it's pattern-matching, not real NLU, same "start with rules" philosophy as `find_known_locations`.
-  - **Not done**: the mobile Companion screen doesn't consume `items` yet — no deep-link from a
-    services-intent reply into `app/services/grocery/index.tsx` pre-filled with the parsed items.
-    Deliberately scoped out of this pass to avoid a mobile-file conflict with the concurrent grocery
-    adapter refactor (see Mobile section below) — natural next step once picked back up.
+  - **Now done (fourth pass): the mobile Companion consumes `items`.** `lib/zenny-voice.ts`'s
+    `ZennyVoiceTurn` gained the `items: string[]` field; when a services reply arrives, companion.tsx
+    renders an "Open grocery hand-off" button that pushes `/services/grocery` with the items
+    '|'-joined as a param; `app/services/grocery/index.tsx` reads `useLocalSearchParams().items` in a
+    lazy `useState` initializer to pre-fill the draft list ('|' chosen because item names can contain
+    commas). `tsc --noEmit` clean.
+- **Safety intent (15/16) is real** — KB-backed content + deterministic emergency fast path:
+  - `app/seed.py`: `SAFETY_SOURCES`/`SAFETY_ENTRIES` seeded via the same `_upsert_entry()` pipeline,
+    `entity_type="safety_info"`: Emergency Number 112 (112.gov.in, primary/verified), Tourist
+    Helpline 1363 (tourism.gov.in, primary/verified), Common Tourist Scams (Delhi Police advisory,
+    secondary/estimated). Re-ran seed: 3 new entities, 3 new cited claims.
+  - `handle_message()` routes `safety` through the same `_guide_reply()` KB retrieval as guide/payment,
+    but first checks `_is_emergency(text)` — if matched, a deterministic no-retrieval answer ("call
+    112 now… tourist help 1363") with verified citations leads the reply. Emergency answers never
+    depend on search matching or even the KB being seeded.
+  - Intent classifier fix found while testing: safety was listed after `services` in INTENT_KEYWORDS,
+    so "I need help, I feel unsafe…" matched services' "need" keyword first. Safety now listed FIRST
+    with tighter keywords ("help me", "help, i", "unsafe", "in danger", …) — an emergency must never
+    lose routing to dict ordering.
+- **Translation intent (06) is real** — offline curated phrasebook, `app/phrasebook.py`:
+  - ~6 essential phrases × 9 languages (Hindi, Punjabi, Gujarati, Marathi, Bengali, Tamil, Telugu,
+    Kannada, Malayalam), each entry (native script, romanized pronunciation). Deterministic, no LLM,
+  no network — deliberately offline-first per the spec's fallback layer before Phase 3 live
+  translation. Honest miss on unknown phrases (lists what IS covered) rather than guessing.
+  - Classifier: literal "say in"/"translate" keywords plus a fallback rule — mentions of a supported
+    language + a phrase hint ("thank you", "how much", "toilet", …) also route here, so "how do I say
+  thank you in Tamil" works without containing "say in".
+- **Community (08) and Buddy (10) intents have minimal real tools**, `app/social_service.py`:
+  - Community: curated demo event list for the corridor with end_times computed relative to now;
+    stale events are filtered at query time — spec 08 §21's explicit "stale posters do not remain
+  visible". Freshness label (verified vs community-reported) spoken per event. Live-tested: "what's
+  happening tonight in Jaipur?" → correct event, stale entries absent.
+  - Buddy: parse_buddy_request() extracts destination/month/style/interests/budget/accommodation by
+  rules; find_buddy_matches() scores demo groups with exactly the V1 weights from spec 10 §23.3
+  (dates 25% + destination 20% + budget 15% + style 15% + interests-jaccard 10% + start location 5%
+  + accommodation 5%). Aggregated cards only — no personal details pre-consent (§23.4). Live-tested:
+  "find travel buddies for spiti in october, trekking and photography, budget 20k" → Spiti Circuit
+  October at 47%, 2 more groups matched. Classifier keywords widened ("buddies", "going to",
+  "join for").
+- **knowledge_service AND-across-tokens fragility fixed structurally** (was patched stopword-by-
+  stopword before):
+  - Tokens are punctuation-stripped now ("delhi?" previously failed to match "Delhi" — this was
+  silently zeroing real queries like "common tourist scams in Delhi?").
+  - Matching is progressive: all tokens first, then drop one token at a time until something matches;
+  scoring still prefers rows matching more tokens. This fixes the whole class ("can foreign travelers
+  use UPI" now returns UPI-for-Foreign-Travelers) instead of each phrasing individually.
+  - Regression-checked live: Taj Mahal guide query unchanged, UPI payment query unchanged, nonsense
+  query still returns empty honestly.
 
 - Journey/Booking Hub (04) minimal timeline — built by a background subagent this pass, verified
   live by me afterward:
@@ -173,10 +218,9 @@ Current model decision:
   `ServiceProviderAdapter` interface — that refactor and the remaining 8 providers are still open.
   Added `apps/mobile/app/services/grocery/index.tsx`, an ad-hoc item-list screen (matches the
   spec's traveler persona — "I need toothpaste and a USB-C charger" — not kmkb's meal-plan-derived
-  list) wired to all 4 buttons. Added `lib/theme.ts`, `lib/webview-geolocation.ts`, `lib/analytics.ts`
-  (stub — no analytics SDK wired yet), `lib/grocery-api.ts` (session-save calls against
-  `/v1/grocery/<provider>/sessions`, which does not exist on this backend yet — every call site
-  already treats save-session as fire-and-forget, so this fails silently until that route exists).
+  list) wired to all 4 buttons. Added `lib/theme.ts`, `lib/webview-geolocation.ts`, and
+  `lib/analytics.ts` (now a bounded local-first event queue), plus `lib/grocery-api.ts` wired to
+  the implemented `/v1/grocery/<provider>/sessions` routes.
   Added `react-native-webview`, `@expo/vector-icons` (promoted to a direct dep), `expo-font` (its
   peer dep) via `expo install`. `tsc --noEmit` clean, `expo-doctor` 18/18. **Never run on a device or
   simulator** — the WebView search/add-to-cart flows are unverified against live Blinkit/Flipkart/
@@ -193,17 +237,110 @@ Current model decision:
 
 ## Partially complete / current limitation
 
+All 8 Agent Gateway intents (guide, payment, compare, trip_planning, services, safety,
+translation, community, buddy) now have real tools bound — none return the skeleton
+"tool isn't connected yet" reply for their own intent anymore. `chat` remains a
+graceful fallback by design. OpenRouter is still only needed for itinerary generation
+(key unset in local `.env`; graceful `LLMNotConfiguredError` fallback verified).
+
 `POST /v1/zenny/voice/turn` (upload → transcribe → Agent Gateway → grounded reply) has now been
 verified working end to end **on the backend, from a synthesized WAV, for the first time in this
-project** — see "Voice STT — now working" below for exactly what was and wasn't tested. The
-remaining gap is specifically the **phone side**: mic permission, recording capture, upload from a
-real device, and native TTS playback have never been exercised. Everything upstream of that (the
-backend pipeline itself) is confirmed functional.
+project** — see "Voice STT — now working" below for exactly what was and wasn't tested. The mobile
+flow now requests mic permission, records/uploads the turn, plays native TTS, persists a voice
+session UUID, and supports barge-in; physical-device QA remains before release.
 
 The Agent Gateway now has real tools for `guide`, `payment`, `compare` (transport + stays),
-`trip_planning`, and `services` (item extraction). Still skeleton: `safety`, `translation`,
-`community`, `buddy`. OpenRouter remains required (and its API key still unset in this local `.env`)
-for itinerary generation specifically — everything else works without it.
+`trip_planning`, `services`, `safety`, `translation`, `community`, and `buddy`. OpenRouter remains
+required (and its API key may be unset in local environments) for itinerary generation specifically;
+everything else works without it.
+
+### Completion pass — Journey, Services, and Social surfaces
+
+- Community and Buddy now have authenticated REST endpoints (`GET /v1/community/events` and
+  `POST /v1/buddy/matches`) in addition to voice-tool access. The mobile Community and Travel Buddy
+  routes now use those endpoints instead of rendering `FeaturePlaceholder`.
+- Basic stay search is now reachable from the mobile Compare screen, not only from the backend API.
+  It remains explicitly demo-only and requires a live check before booking.
+- Grocery hand-off sessions now persist in `grocery_sessions` through the four supported provider
+  routes. The mobile fire-and-forget save calls no longer target a missing endpoint.
+- Journey timeline now includes explicit `TripBooking` records. `POST /v1/trips/{id}/bookings`
+  saves a confirmed/pending/cancelled hand-off, and the mobile Trip screen can create and display
+  those records. Search results are still not silently treated as bookings.
+- Guardian now has a trusted-contact phone action and a location-link action in addition to the
+  official 112 and 1363 buttons. The phone still needs device permission/testing before release.
+- Trip offline pack is now implemented on mobile: `lib/offline-trip.ts` stores the latest trip
+  timeline in `expo-sqlite`, the Trip screen refreshes the cache after an online load, falls back to
+  the last saved copy when the API is unavailable, and displays a locally available emergency card
+  with 112 and 1363. This is an itinerary/booking cache, not an offline map package.
+- Hostel & Social Stay Intelligence (09) is now a real extension of stay search:
+  - `comparison_service.py` stores structured demo attributes for cleanliness, safety, social
+    atmosphere, quietness, remote-work fit, staff, community activity, trek accessibility, solo
+    fit, and nightlife, then combines them with value/location/cancellation into a traveler-style
+    Stay Score.
+  - `POST /v1/compare/stays/search` accepts `travelerStyle` (`balanced`, `social`, `quiet`,
+    `remote_work`, `trek`, `solo`) and returns weighted `scoreBreakdown` components plus
+    `contextSignals`.
+  - Social context is privacy-safe and aggregate-only: current community event titles and the
+    number of members in overlapping demo hostel groups. No traveler identities are exposed.
+  - The mobile Compare screen now lets travelers choose a stay preference and see the score,
+    top weighted factors, and context signals. Results remain clearly demo-only and non-bookable.
+- Trails/OSM research is now represented by a safe preview data layer. OSM may contain path
+  segments or route relations for Kedarnath/Kuari Pass, but coverage and continuity must be
+  checked per route before publishing; preview lines are never represented as verified or safe
+  offline trekking routes. The mobile Trails screen now supports manifests and SQLite package
+  caching; the native MapLibre route layer now renders the stored GeoJSON geometry, while
+  licensed base tiles/PMTiles, DEM/compass alignment, and field/official validation remain
+  required for navigation-ready output.
+
+### Phase 3 implementation pass — During-Trip Corridor MVP
+
+- Guide 07-full is implemented in the corridor: camera upload → constrained landmark candidate
+  matching → confidence gate → cited Knowledge Base response. It now supports content modes for
+  overview, deep history, architecture, kids, academic context, and hidden details, with native
+  speech playback on mobile. GPS coordinates now narrow the candidate list using seeded landmark
+  centroids when location permission is available. It still requires a configured vision provider
+  for real identification.
+- Translator 06 now has a dedicated `/translation` mobile flow and `POST /v1/translation/translate`.
+  It supports the curated offline phrasebook, pronunciation, native speech playback, confidence
+  labels, and optional KB context for menu/cultural terms. Unknown phrases fail honestly instead of
+  hallucinating. Cloud streaming STT/translation/TTS remains an external provider integration.
+- Guardian 15-minimal now has a deterministic incident state machine backed by
+  `guardian_incidents`: create → check in → share coordinates → resolve. New endpoints are
+  `POST /v1/guardian/incidents`, `GET /v1/guardian/incidents/active`, and the check-in/share/resolve
+  action routes. The mobile SOS screen now exposes category selection and incident controls while
+  retaining native 112/1363/1091 dialing and location actions. No authority dispatch or automatic
+  escalation is claimed.
+- Offline itinerary hardening remains implemented through SQLite timeline caching and the local
+  emergency card. Trail packages now use a separate SQLite cache with explicit preview warnings.
+- The Phase 3 code pass is complete for the corridor MVP. Before calling it production-ready, run
+  migration `c4e8f2a1b6d0`, configure the vision/cloud voice providers, and perform physical-device
+  QA for camera, microphone, location, dialing, speech, and zero-connectivity behavior.
+
+### Phase 5–6 implementation pass — Verification and Risk workflows
+
+- Risk Intelligence (16) is implemented with `risk_patterns`, published city/location patterns,
+  confidence/freshness/source metadata, `GET /v1/risks`, a Guardian Scam lookup link, and a
+  Companion safety reply path. Seed entries are clearly estimated editorial demo data; they do not
+  name or accuse businesses or individuals.
+- Explorer Program (13) is implemented with `explorer_profiles`, safety-gated activation,
+  `explorer_missions`, GPS-capable `explorer_submissions`, and review-pending statuses. Mobile has
+  application, safety activation, mission, and submission flows. Submissions are not marked verified
+  automatically.
+- Destination Experts (14) is implemented with expert profiles, city matching, human-in-the-loop
+  cases, assignment, response, and traveler case history. UI copy explicitly says experts are not
+  emergency responders. Admin/editorial approval and real staffing remain operational prerequisites.
+- Staff-only moderation endpoints now review Explorer profiles/submissions, Risk patterns, and
+  Expert profiles. Access uses `role=staff` or the configured `STAFF_EMAILS` allowlist; this is an
+  API moderation surface, not a finished admin web console.
+- Knowledge editorial workflow is now complete: staff can create sources/entities/claims, inspect
+  the review queue, publish or reject content, retire sources, and roll claims back to
+  `needs_review`; every transition is recorded in `knowledge_moderation_audits`.
+- Phase 0 analytics now has a bounded AsyncStorage-backed local event queue in `lib/analytics.ts`;
+  remote Sentry/Amplitude export still requires real project credentials and privacy review.
+- Trails/Peak foundation is now implemented: `trails`, `trail_waypoints`, `trail_hazards`, and
+  `peaks` tables; public preview/published catalog endpoints; staff review for routes, peaks, and
+  hazards; offline package manifests cached in SQLite; and geometry-first nearby-peak lookup.
+  Seeded Kedarnath and Kuari Pass route lines are explicitly illustrative and not navigation-ready.
 
 ## Remaining work in the immediate voice milestone
 
@@ -237,24 +374,26 @@ for itinerary generation specifically — everything else works without it.
   Mahal."` (faster-whisper "base.en" transcribed it correctly), routed to the `guide` intent,
   returned the correct grounded KB reply with citation. This is a real, repeatable success, not a
   lucky one-off — confirmed at least twice across the investigation.
-  - **Still not done**: mic permission, real recording capture, and upload from an actual phone;
-    native TTS playback of the response on-device. The backend pipeline itself is now confirmed
-    working — what's left is specifically the client-device half.
+  - Mic permission, real recording capture, upload, and native TTS playback are implemented in the
+    mobile flow; physical-device QA remains before pilot release.
   - `VOICE_STT_DEVICE=cpu` is only in the local `.env` on this machine — whoever sets up a fresh
     environment needs to add it too (or deploy to a machine with working CUDA), or they'll hit the
     same `cublas64_12.dll` error.
 - Replace skeleton responses with real tool orchestration:
-  - Compare (transport + stays), Trip, Guide, Payment, Services (item extraction) — **done**, see
-    "Backend foundation" above.
-  - Safety, translation, community, buddy — still skeleton, no tool bound.
-- Add voice interruption/barge-in and a persistent voice session ID after push-to-talk
-  is stable.
+  - **All done** — compare (transport + stays), trip, guide, payment, services, safety,
+    translation, community, buddy all have real tools (see "Backend foundation"). Only
+    `chat` remains a graceful fallback by design.
+  - ~~Safety, translation, community, buddy — still skeleton, no tool bound.~~ Done in the
+    fourth pass; see Backend foundation for details and live tests.
+- ~~Add voice interruption/barge-in and a persistent voice session ID after push-to-talk is stable.~~
+  Done: the mobile client persists a voice session UUID, the API scopes Redis memory to it, and
+  pressing the orb while Zenny speaks stops playback and starts a new turn.
 
 ## Still open / not attempted this pass
 
-- **Services → grocery mobile wiring**: backend parses items and returns them (`AgentReply.items`),
-  but no mobile screen consumes that yet — no deep-link from a Companion reply into
-  `app/services/grocery/index.tsx` pre-filled with the parsed items.
+- ~~**Services → grocery mobile wiring**~~ Done (fourth pass) — see Backend foundation.
+- ~~The AND-across-all-search-tokens fragility in `knowledge_service.py`~~ Fixed structurally
+  (progressive token relaxation + punctuation stripping) — see Backend foundation.
 - **Payment content depth**: only UPI is seeded (2 entities). Cash norms, ATM guidance, and card
   acceptance were researched but not seeded — the ATM/card figures found (e.g. ~₹10,000–20,000
   foreign-card withdrawal caps) came from travel-blog aggregators, not authoritative enough to cite
@@ -264,27 +403,37 @@ for itinerary generation specifically — everything else works without it.
   reaching the LAN backend) — raised earlier, explicitly deferred by the user, not touched this pass.
   Likely a Windows Firewall inbound-rule issue for port 8001 (unconfirmed — investigation was
   interrupted before reaching a conclusion).
-- Grocery `ServiceProviderAdapter` interface covers 4 of 12 original kmkb-mobile-app providers; the
-  remaining 8 (DMart, JioMart, BigBasket, Milkbasket, Nature's Basket, Spencer's, Healthy Buddha,
-  Licious, FreshToHome) were never ported.
-- The AND-across-all-search-tokens fragility in `knowledge_service.py` (see Payment Assistance
-  above) — patched for the one phrasing that mattered, not fixed structurally.
+- Grocery `ServiceProviderAdapter` interface still covers 4 of the original provider components;
+  porting the remaining external WebView flows requires a separate migration/QA pass.
+- Live transport, hotel, grocery-catalog, and payment-provider integrations remain external work;
+  current comparison and stay results are deliberately labelled demo-only.
 
-## Later roadmap
+## Remaining external or deliberately held work
 
 - Expand the curated KB to 30–40 corridor places, with editorial review and source URLs.
 - Add hybrid keyword + pgvector retrieval once the corpus is larger.
-- Build a small admin/editor workflow for claims, sources, review, publish, and rollback.
+- ~~Build a small admin/editor workflow for claims, sources, review, publish, and rollback.~~
+  Done as staff-only API tooling under `/v1/moderation/knowledge`, including immutable audit
+  records and explicit claim rollback to `needs_review`; a separate web console is optional.
 - Add live provider adapters for transport and opening hours; never treat them as static KB facts.
-- Add camera-based landmark identification in Phase 3.
-- Add full Twilio real-time voice bridge after the push-to-talk voice loop works.
-- Add Guardian safety workflows, offline itinerary, community, trails, and expert verification
-  according to the roadmap.
+- Phase 3 camera guide, translator fallback, Guardian incident state, and offline itinerary work are
+  implemented; provider configuration and physical-device QA remain before pilot release.
+- Configure authorized transport/hotel/grocery/payment providers and require live checks before any
+  booking handoff.
+- Add full Twilio/Deepgram/ElevenLabs streaming voice bridge after provider credentials and device
+  testing are available.
+- Add remote Sentry/Amplitude export after project keys and privacy review.
+- Trail/Peak preview data and the native MapLibre GeoJSON route layer now exist; licensed map
+  tiles/PMTiles, DEM/compass alignment, and field verification remain before navigation-ready
+  publishing.
+- Feature 17 Carry/Crowdshipping remains intentionally deferred because it requires legal, insurance,
+  and partner review.
 
 ## Verification already performed
 
 - Backend Python compilation/import checks.
-- Offline Alembic migration SQL check through the new KB migration.
+- Offline Alembic migration SQL check through the current migration head, including editorial audit
+  records and GPS landmark centroids.
 - SQLite smoke tests for Knowledge Base search and published-claim itinerary grounding.
 - Mobile TypeScript check.
 - Direct Babel transform checks after the Expo dependency fix.
@@ -292,6 +441,9 @@ for itinerary generation specifically — everything else works without it.
   for `compare` (real ranked demo fare), `guide` (regression check, unchanged), and `trip_planning`
   (no-trip case, then post-create-trip case hitting the expected `LLMNotConfiguredError` fallback).
 - `tsc --noEmit` and `expo-doctor` clean on `apps/mobile` after the grocery provider port.
+- Python `compileall` and mobile `npm run typecheck` clean after the Journey/Social completion pass.
+- Added pure unit coverage for stale-event filtering and buddy-score ordering in
+  `services/api/tests/test_social_service.py`.
 - This pass's parallel push, all against the same local Postgres/Redis: `compare` intent → stay
   search ("cheap hostel in Jaipur", "tell me about Agra hotels") and transport regression check;
   `services` intent item extraction (clean and edge-case inputs); `payment` intent (working phrasing

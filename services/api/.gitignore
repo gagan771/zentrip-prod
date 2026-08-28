@@ -3,4 +3,5 @@ __pycache__/
 .venv/
 venv/
 .env
+scripts/smoke_results.json
 *.egg-info/

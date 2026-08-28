@@ -60,9 +60,13 @@ User → Agent Gateway → Context Builder → Intent Router → Policy Engine �
 
 - **Intent Router**: simple keyword classification into `trip_planning` / `compare` / `translation` / `guide` / `services` / `safety` / `community` / `buddy` / `chat`. Deliberately not ML yet — the spec's own ranking philosophy (§47) is rules first, learn later.
 - **Policy Engine**: tags each intent as `no_confirmation` / `confirmation` / `strong_verification` per master spec §43.
-- **Context Builder**: currently loads user profile fields only. Trip memory (Postgres, per `trip_id`) and long-term preference memory land with the Trip Planner feature (`02-ai-trip-planner.md`) — not built yet.
+- **Context Builder**: loads user profile fields, recent trip-memory notes, and active long-term preferences. Preferences are explicit opt-in writes; chat never infers them silently.
 - **Session memory**: Redis, 2-hour TTL, last 20 turns — the first of the three memory tiers in `01-zentrip-companion.md` §3.
-- **Orchestrator**: no real tools (`search_transport`, `open_service`, etc.) are bound yet. Replies acknowledge the classified intent and say so explicitly, so the routing logic is genuinely testable even though nothing real executes yet.
+- **Orchestrator**: real deterministic tools are bound for guide, payment, compare, trip planning, grocery item extraction, safety, offline translation, community events, and buddy matching. `chat` remains a graceful fallback; live provider booking is intentionally not faked.
+- **Phase 3 routes**: `POST /v1/translation/translate` provides the offline phrasebook contract with pronunciation and optional KB context; `POST /v1/guardian/incidents` plus its active/check-in/share/resolve routes provide the deterministic Guardian incident state machine. Apply Alembic migration `c4e8f2a1b6d0` before using Guardian persistence.
+- **Phase 5–6 routes**: `/v1/explorer` provides applications, safety activation, corridor missions, and GPS-tagged submissions; `/v1/experts` provides traveler cases and active-expert responses; `/v1/risks` provides published, confidence/freshness-tagged pattern lookup. Apply migration `d9f3a7c1e2b4` before using these workflows.
+- **Trails/Peaks routes**: `/v1/trails` exposes preview/published trail manifests, waypoints, active hazards, and offline package payloads; `/v1/peaks/nearby` computes distance/bearing from the peak catalog. Apply migration `a7b8c9d0e1f2` and run `python -m app.seed` for the illustrative Kedarnath/Kuari Pass and Himalayan preview records. Preview records are deliberately not navigation-ready.
+- **Moderation**: staff-only `/v1/moderation/*` endpoints review Explorer profiles/submissions, Risk patterns, and Expert profiles. Set `STAFF_EMAILS` or promote a user to `role=staff`; unreviewed Explorer output is never marked verified automatically.
 
 Every response carries a `confidence` field (`"estimated"` for now) — the app-wide provenance-labeling convention from `00-consolidated-tech-stack.md` §4 that the mobile UI already renders.
 
@@ -95,9 +99,14 @@ For local testing, expose the API through an HTTPS tunnel and set `PUBLIC_BASE_U
 
 The first adapters are intentionally limited to Delhi–Agra–Jaipur **demo** rail and coach results. Every response is marked `isDemoData: true`, `freshness: "estimated"`, `bookable: false`, and `liveCheckRequired: true`; no fare or availability is represented as live until an authorized provider adapter is connected.
 
-## Next steps (Phase 1/2, not done here)
+## Remaining external work
 
-- Bind the Compare endpoint and other real tools to the Companion's Orchestrator (`app/agent_gateway.py`) instead of only classifying the intent.
+Editorial knowledge moderation is available to staff through `/v1/moderation/knowledge/queue`,
+`/v1/moderation/knowledge/sources`, `/v1/moderation/knowledge/entities`,
+`/v1/moderation/knowledge/claims`, claim/entity/source review endpoints, and claim rollback.
+Every editorial transition is recorded in `knowledge_moderation_audits`.
+
 - Replace demo comparison adapters with authorized provider/partner adapters and require a fresh live check before every booking handoff.
-- `DestinationStay` / booking tables land with `04-journey-booking-hub.md` — not built yet.
+- Configure and test the LLM/STT/vision providers in each deployment environment.
+- Add the remaining external grocery WebView providers after their flows are migrated and device-tested.
 - Swap the CORS wildcard and `JWT_SECRET` dev default before this touches anything but localhost.
