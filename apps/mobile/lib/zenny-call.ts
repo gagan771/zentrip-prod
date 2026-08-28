@@ -3,6 +3,8 @@ import {
   setAudioModeAsync,
   useAudioRecorder,
 } from 'expo-audio';
+import { File } from 'expo-file-system';
+import { Platform } from 'react-native';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
@@ -42,15 +44,22 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 
 async function readClip(uri: string): Promise<{ mime: string; data: string } | null> {
   try {
-    const response = await fetch(uri);
-    const buffer = await response.arrayBuffer();
-    if (buffer.byteLength < 64) return null;
     const lower = uri.toLowerCase();
     const mime = lower.includes('.wav')
       ? 'audio/wav'
       : lower.includes('.webm')
         ? 'audio/webm'
         : 'audio/m4a';
+    // React Native's fetch does not reliably read file:// recording URIs on
+    // Android. Use Expo's native reader for device recordings; keep fetch for
+    // web where the URI is a browser Blob URL.
+    if (Platform.OS !== 'web') {
+      const data = await new File(uri).base64();
+      return data.length >= 80 ? { mime, data } : null;
+    }
+    const response = await fetch(uri);
+    const buffer = await response.arrayBuffer();
+    if (buffer.byteLength < 64) return null;
     return { mime, data: arrayBufferToBase64(buffer) };
   } catch {
     return null;
