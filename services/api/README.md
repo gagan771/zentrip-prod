@@ -34,6 +34,8 @@ Health check: `GET http://localhost:8000/health` → `{"status": "ok", ...}` (no
 | `app/routers/agent.py` | `/v1/agent/message`, `/v1/agent/session` |
 | `app/llm.py` | OpenRouter-free-model/Claude tool-use adapter with Knowledge Base grounding validation |
 | `app/routers/trips.py` | `/v1/trips`, `/v1/trips/:id`, `/v1/trips/:id/itinerary`, `/v1/trips/:id/generate-itinerary` |
+| `app/routers/planner.py` | Adaptive traveler profiles, versioned itinerary drafts, approvals, feedback, and staff editorial rules |
+| `app/adaptive_planner.py` | Transparent experience scoring, deterministic validation, and grounded fallback planning |
 | `app/twilio_voice.py` | Twilio outbound call adapter and consent/disclosure TwiML flow |
 | `app/routers/onboarding.py` | Call initiation, TwiML speech prompts, and provider status webhooks |
 | `app/comparison_service.py` | Provider-adapter contract, corridor demo adapters, and deterministic scoring |
@@ -72,12 +74,26 @@ Every response carries a `confidence` field (`"estimated"` for now) — the app-
 
 ## AI Trip Planner: itinerary generation
 
-`POST /v1/trips` creates a trip (cities, dates, budget level). `POST /v1/trips/:id/generate-itinerary` then:
+`POST /v1/trips` creates a trip (cities, dates, budget level). The existing
+`POST /v1/trips/:id/generate-itinerary` remains the compatibility generator. The
+adaptive planner is available at `POST /v1/trips/:id/plans` and then:
 
-1. Loads `KnowledgeEntity` rows matching the trip's cities as candidate places.
-2. Calls OpenRouter's `openrouter/free` model router by default (`app/llm.py`) with those candidates and a system prompt that explicitly forbids inventing places/facts not in the candidate list — per master spec §107 ("AI can predict/rank/explain, but live systems must verify").
-3. Forces the response through a `return_itinerary` tool call (fixed JSON schema), not free text — nothing to parse-and-hope-for.
-4. Replaces any existing `ItineraryDay` rows for the trip and returns them.
+1. Loads published `KnowledgeEntity`/`KnowledgeClaim` rows matching the trip cities.
+2. Merges the traveler's structured profile, explicit preferences, recent feedback, and published editorial rules.
+3. Scores candidates for interests, pace, walking tolerance, budget, and prior feedback.
+4. Calls the pinned OpenRouter model through the existing `return_itinerary` tool schema.
+5. Validates place IDs, requested cities, dates, activity durations, overlaps, and daily limits.
+6. Stores a versioned `ItineraryPlan`, a `PlannerRun` trace, and mirrors the newest plan to legacy `ItineraryDay` rows.
+7. Falls back to a grounded deterministic plan when the model provider is unavailable; the response marks `validation.fallbackUsed`.
+
+Travelers can approve/reject a plan and record item feedback through the
+`/v1/trips/:id/plans/:plan_id/*` routes. Staff-only editorial rules are managed
+under `/v1/planner/editorial-rules`; user feedback never becomes global knowledge automatically.
+Staff can review the feedback queue at `/v1/planner/feedback` and explicitly promote a
+reviewed observation to a pending editorial rule with `/v1/planner/feedback/:id/promote`.
+For future evaluation/fine-tuning, export privacy-safe approved examples with
+`python -m scripts.export_planner_dataset --output ./data/planner.jsonl`; OpenRouter
+remains inference-only, so this dataset is not silently uploaded to a provider.
 
 **Won't generate anything until you set a key**: create an OpenRouter key and set `OPENROUTER_API_KEY`. Until then this returns `503` with a clear message, same pattern as Google sign-in. Run `python -m app.seed` first so there's grounding data to retrieve — without it, the model is told to produce fewer activities rather than invent any. Direct Claude remains available with `LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`.
 

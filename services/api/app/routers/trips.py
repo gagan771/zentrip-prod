@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.deps import get_current_user
 from app.llm import LLMNotConfiguredError, LLMProviderError, generate_itinerary_days, provider_configuration_error
-from app.models import ItineraryDay, KnowledgeClaim, KnowledgeEntity, KnowledgeSource, Trip, TripBooking, User
+from app.knowledge_ops import merge_operational_profile
+from app.models import DestinationProfile, ItineraryDay, KnowledgeClaim, KnowledgeEntity, KnowledgeObservation, KnowledgeSource, Trip, TripBooking, User
 from app.schemas import (
     ActivityOut,
     GenerateItineraryResponse,
@@ -80,20 +81,62 @@ async def _load_candidate_places(db: AsyncSession, cities: list[str]) -> list[di
             .where(
                 KnowledgeEntity.city.in_(cities),
                 KnowledgeEntity.status == "published",
-                KnowledgeEntity.entity_type.notin_([
-                    "payment_info", "safety_info", "monument_feature",
-                    "city_guide", "travel_route", "season", "viewpoint", "food_district",
-                ]),
+                KnowledgeEntity.entity_type.in_(["monument", "activity"]),
                 KnowledgeClaim.verification_status == "published",
                 KnowledgeSource.status == "active",
             )
             .order_by(KnowledgeClaim.last_verified.desc())
         )
     ).all()
+    entity_ids = list({entity.id for entity, _, _ in rows})
+    observations_by_entity: dict[uuid.UUID, list[KnowledgeObservation]] = {}
+    if entity_ids:
+        observations = (
+            await db.scalars(
+                select(KnowledgeObservation)
+                .where(KnowledgeObservation.entity_id.in_(entity_ids))
+                .order_by(KnowledgeObservation.observed_at.desc())
+            )
+        ).all()
+        for observation in observations:
+            observations_by_entity.setdefault(observation.entity_id, []).append(observation)
+    profiles_by_entity: dict[uuid.UUID, DestinationProfile] = {}
+    if entity_ids:
+        profiles = (
+            await db.scalars(
+                select(DestinationProfile)
+                .where(
+                    DestinationProfile.entity_id.in_(entity_ids),
+                    DestinationProfile.status == "published",
+                )
+            )
+        ).all()
+        profiles_by_entity = {profile.entity_id: profile for profile in profiles}
     candidates: dict[str, dict] = {}
     for entity, claim, source in rows:
         # The itinerary tool accepts one fact per place today. Prefer the newest
         # reviewed claim deterministically; a later guide response can use all claims.
+        experience_profile = merge_operational_profile(
+            entity.experience_profile,
+            observations_by_entity.get(entity.id, []),
+        )
+        profile = profiles_by_entity.get(entity.id)
+        if profile is not None:
+            experience_profile["destinationProfile"] = {
+                "state": profile.state,
+                "region": profile.region,
+                "destinationKind": profile.destination_kind,
+                "tags": profile.tags,
+                "bestSeasons": profile.best_seasons,
+                "typicalStayMinDays": profile.typical_stay_min_days,
+                "typicalStayMaxDays": profile.typical_stay_max_days,
+                "altitudeM": profile.altitude_m,
+                "gatewayCity": profile.gateway_city,
+                "gatewayAirports": profile.gateway_airports,
+                "accessNotes": profile.access_notes,
+                "safetyNotes": profile.safety_notes,
+                "accessibility": profile.accessibility,
+            }
         candidates.setdefault(
             str(entity.id),
             {
@@ -101,10 +144,12 @@ async def _load_candidate_places(db: AsyncSession, cities: list[str]) -> list[di
                 "name": entity.name,
                 "city": entity.city,
                 "fact": claim.claim,
+                "claimId": str(claim.id),
                 "source": source.name,
                 "sourceUrl": source.source_url,
                 "lastVerified": claim.last_verified.isoformat(),
                 "confidence": claim.confidence,
+                "experienceProfile": experience_profile,
             },
         )
     return list(candidates.values())

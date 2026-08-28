@@ -288,6 +288,19 @@ def main() -> int:
         headers=auth,
         json_body={"text": "find buddies for Spiti in October trekking budget 20k"},
     )
+    call(
+        "buddy.waitlist_create",
+        "POST",
+        "/v1/buddy/waitlist",
+        expect=201,
+        headers=auth,
+        json_body={
+            "groupId": "open-corridor-waitlist",
+            "groupName": "Golden Triangle open waitlist",
+            "requestText": "October architecture backpacker",
+        },
+    )
+    call("buddy.waitlist_list", "GET", "/v1/buddy/waitlist", expect=200, headers=auth)
 
     call("risks.list", "GET", "/v1/risks", expect=200, headers=auth, params={"city": "Delhi"})
     call("peaks.nearby", "GET", "/v1/peaks/nearby", expect=200, params={"latitude": 30.7, "longitude": 79.0})

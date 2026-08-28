@@ -60,6 +60,87 @@ class TripOut(BaseModel):
     status: str
 
 
+class TravelerProfileInput(BaseModel):
+    interests: list[str] = Field(default_factory=list, max_length=20)
+    pace: str = Field(default="balanced", pattern="^(relaxed|balanced|packed)$")
+    transportPreferences: list[str] = Field(default_factory=list, max_length=10)
+    walkingTolerance: str = Field(default="medium", pattern="^(low|medium|high)$")
+    wakeTime: str = Field(default="08:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    sleepTime: str = Field(default="22:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    travelParty: str = Field(default="solo", pattern="^(solo|couple|family|group)$")
+    accessibility: list[str] = Field(default_factory=list, max_length=10)
+    foodPreferences: list[str] = Field(default_factory=list, max_length=20)
+
+
+class TravelerProfileOut(TravelerProfileInput):
+    updatedAt: datetime
+
+
+class TripConstraintsInput(BaseModel):
+    maxActivitiesPerDay: int = Field(default=3, ge=1, le=8)
+    maxDailyTravelMinutes: int = Field(default=240, ge=0, le=960)
+    dailyBudget: int | None = Field(default=None, ge=0)
+    currency: str = Field(default="INR", min_length=3, max_length=3)
+    avoid: list[str] = Field(default_factory=list, max_length=20)
+    mustInclude: list[str] = Field(default_factory=list, max_length=20)
+
+
+class AdaptivePlanCreate(BaseModel):
+    profile: TravelerProfileInput | None = None
+    constraints: TripConstraintsInput = Field(default_factory=TripConstraintsInput)
+
+
+class ItineraryFeedbackCreate(BaseModel):
+    itemKey: str = Field(min_length=1, max_length=200)
+    action: str = Field(pattern="^(accept|reject|replace|reschedule|complete|comment)$")
+    reason: str | None = Field(default=None, max_length=500)
+    replacementPlaceId: str | None = Field(default=None, max_length=100)
+    details: dict = Field(default_factory=dict)
+
+
+class ItineraryFeedbackOut(BaseModel):
+    id: uuid.UUID
+    planId: uuid.UUID
+    tripId: uuid.UUID
+    userId: uuid.UUID
+    itemKey: str
+    action: str
+    reason: str | None = None
+    replacementPlaceId: str | None = None
+    details: dict
+    actor: str
+    createdAt: datetime
+
+
+class EditorialRuleCreate(BaseModel):
+    scope: str = Field(default="India", min_length=2, max_length=100)
+    condition: str = Field(min_length=3, max_length=500)
+    action: str = Field(min_length=3, max_length=5000)
+    priority: int = Field(default=50, ge=0, le=100)
+    sourceFeedbackId: uuid.UUID | None = None
+
+
+class EditorialRuleDecision(BaseModel):
+    status: str = Field(pattern="^(published|needs_review|retired)$")
+
+
+class PlanStaffDecision(BaseModel):
+    status: str = Field(pattern="^(approved|rejected|needs_staff_review)$")
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class EditorialRuleOut(BaseModel):
+    id: uuid.UUID
+    scope: str
+    condition: str
+    action: str
+    priority: int
+    status: str
+    sourceFeedbackId: uuid.UUID | None = None
+    createdAt: datetime
+    updatedAt: datetime
+
+
 class ActivityOut(BaseModel):
     startTime: str
     placeId: str | None = None
@@ -75,6 +156,21 @@ class ItineraryDayOut(BaseModel):
     date: date
     city: str
     activities: list[ActivityOut]
+
+
+class ItineraryPlanOut(BaseModel):
+    id: uuid.UUID
+    tripId: uuid.UUID
+    version: int
+    status: str
+    model: str
+    promptVersion: str
+    days: list[ItineraryDayOut]
+    preferencesSnapshot: dict
+    sourceClaimIds: list[str]
+    validation: dict
+    approvedAt: datetime | None = None
+    createdAt: datetime
 
 
 class GenerateItineraryResponse(BaseModel):
@@ -190,6 +286,75 @@ class BuddyMatchOut(BaseModel):
 class BuddyMatchesResponse(BaseModel):
     matches: list[BuddyMatchOut]
     parsedRequest: dict
+
+
+class BuddyWaitlistCreate(BaseModel):
+    groupId: str = Field(min_length=1, max_length=80)
+    groupName: str = Field(min_length=1, max_length=200)
+    requestText: str | None = Field(default=None, max_length=1000)
+
+
+class BuddyWaitlistOut(BaseModel):
+    id: uuid.UUID
+    groupId: str
+    groupName: str
+    requestText: str | None = None
+    status: str
+    createdAt: datetime
+
+
+class BuddyWaitlistListResponse(BaseModel):
+    requests: list[BuddyWaitlistOut]
+
+
+class BuddyPeerOut(BaseModel):
+    peerId: uuid.UUID
+    groupId: str
+    groupName: str
+    label: str
+    displayName: str | None = None
+    youConsented: bool
+    theyConsented: bool
+    chatUnlocked: bool
+    pairId: uuid.UUID | None = None
+
+
+class BuddyPeerListResponse(BaseModel):
+    peers: list[BuddyPeerOut]
+
+
+class BuddyConsentCreate(BaseModel):
+    peerId: uuid.UUID
+
+
+class BuddyThreadOut(BaseModel):
+    pairId: uuid.UUID
+    groupId: str
+    groupName: str
+    displayName: str
+    chatUnlocked: bool = True
+
+
+class BuddyThreadListResponse(BaseModel):
+    threads: list[BuddyThreadOut]
+
+
+class BuddyMessageCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=2000)
+
+
+class BuddyMessageOut(BaseModel):
+    id: uuid.UUID
+    sender: str
+    body: str
+    createdAt: datetime
+
+
+class BuddyMessageListResponse(BaseModel):
+    pairId: uuid.UUID
+    displayName: str
+    groupName: str
+    messages: list[BuddyMessageOut]
 
 
 class GuardianIncidentCreate(BaseModel):
@@ -372,6 +537,88 @@ class KnowledgeModerationDecision(BaseModel):
     reviewerNote: str | None = Field(default=None, max_length=1000)
 
 
+class KnowledgeObservationCreate(BaseModel):
+    entityId: uuid.UUID
+    sourceId: uuid.UUID
+    kind: str = Field(pattern="^(hours|ticketing|rating|activity)$")
+    conflictKey: str = Field(min_length=2, max_length=100)
+    value: dict
+    sourceUrl: str | None = Field(default=None, max_length=1000)
+    observedAt: date
+    refreshAfter: date
+
+
+class KnowledgeObservationDecision(BaseModel):
+    status: str = Field(pattern="^(approved|needs_review|rejected|retired)$")
+    reviewerNote: str | None = Field(default=None, max_length=1000)
+
+
+class KnowledgeObservationOut(BaseModel):
+    id: uuid.UUID
+    entityId: uuid.UUID
+    entityName: str
+    city: str
+    sourceId: uuid.UUID
+    sourceName: str
+    sourceUrl: str | None
+    kind: str
+    conflictKey: str
+    value: dict
+    observedAt: date
+    refreshAfter: date
+    status: str
+    reviewerId: uuid.UUID | None = None
+    reviewerNote: str | None = None
+
+
+class KnowledgeOperationalHealthOut(BaseModel):
+    total: int
+    stale: int
+    needsReview: int
+    conflicts: list[str]
+    alert: str
+    checkedOn: date
+
+
+class DestinationProfileOut(BaseModel):
+    entityId: uuid.UUID
+    name: str
+    city: str
+    state: str
+    region: str
+    destinationKind: str
+    tags: list[str]
+    bestSeasons: list[str]
+    typicalStayMinDays: int
+    typicalStayMaxDays: int
+    altitudeM: int | None = None
+    gatewayCity: str | None = None
+    gatewayAirports: list[str]
+    accessNotes: str | None = None
+    safetyNotes: str | None = None
+    accessibility: dict
+    sourceUrl: str | None = None
+    lastVerified: date
+    refreshAfter: date
+    status: str
+
+
+class DestinationRouteOut(BaseModel):
+    origin: str
+    destination: str
+    originCity: str
+    destinationCity: str
+    mode: str
+    distanceKm: float | None = None
+    typicalMinMinutes: int
+    typicalMaxMinutes: int
+    seasonNotes: str | None = None
+    sourceUrl: str | None = None
+    observedAt: date
+    refreshAfter: date
+    status: str
+
+
 class KnowledgeEditorialClaimOut(BaseModel):
     id: uuid.UUID
     entityId: uuid.UUID
@@ -475,6 +722,8 @@ class PeakOut(BaseModel):
     description: str
     sourceName: str
     lastVerified: date
+    angularDifferenceDegrees: float | None = None
+    lineOfSight: str = "unverified"
 
 
 class PeaksResponse(BaseModel):
@@ -482,6 +731,10 @@ class PeaksResponse(BaseModel):
     latitude: float
     longitude: float
     bearingDegrees: float | None = None
+    fieldOfView: float | None = None
+    demApplied: bool = False
+    identificationMethod: str = "catalog_distance"
+    demNote: str | None = None
 
 
 class TrailHazardCreate(BaseModel):
@@ -666,6 +919,39 @@ class ZennyVoiceTurnResponse(BaseModel):
     confidence: str
     citations: list[KnowledgeCitationOut] = Field(default_factory=list)
     items: list[str] = Field(default_factory=list)
+    brain: str = "zentrip"
+
+
+class ZennyVoiceStatusResponse(BaseModel):
+    agentReady: bool
+    liveSttReady: bool
+    voiceLiveEnabled: bool
+    livekitReady: bool = False
+
+
+class ZennyLivekitTokenRequest(BaseModel):
+    sessionId: str | None = None
+
+
+class ZennyLivekitTokenResponse(BaseModel):
+    url: str
+    token: str
+    room: str
+    sessionId: str
+
+
+class ZennyAgentSessionRequest(BaseModel):
+    sessionId: str | None = None
+    tripId: uuid.UUID | None = None
+
+
+class ZennyAgentSessionResponse(BaseModel):
+    sessionId: str
+    wsUrl: str
+    ticket: str
+    provider: str = "sarvam-voice-agent"
+    duplex: bool = True
+    sampleRate: int = 16000
 
 
 class ZennyLiveSessionRequest(BaseModel):

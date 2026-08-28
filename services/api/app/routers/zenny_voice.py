@@ -10,12 +10,14 @@ import uuid
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent_gateway import handle_voice_turn
+from app.agent_gateway import handle_voice_turn, load_session_messages, append_session_message
 from app.config import settings
 from app.db import get_db
 from app.deps import get_current_user
 from app.models import User
 from app.schemas import KnowledgeCitationOut, ZennyVoiceTurnResponse
+from app.sarvam_voice_agent import VoiceAgentError, ask_text, voice_agent_ready
+from app.spoken import spoken_preview
 from app.voice_service import VoiceServiceNotConfiguredError, VoiceTranscriptionError, transcribe_audio
 
 router = APIRouter(prefix="/v1/zenny/voice", tags=["zenny-voice"])
@@ -49,6 +51,34 @@ async def voice_turn(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     session_id = session_id or str(uuid.uuid4())
+    if voice_agent_ready():
+        try:
+            history = await load_session_messages(user.id, session_id)
+            reply = await ask_text(
+                user_id=str(user.id),
+                user_name=user.name,
+                language=user.language,
+                trip_id=str(parsed_trip) if parsed_trip else None,
+                text=transcript,
+                history=history,
+            )
+            spoken = spoken_preview(reply)
+            await append_session_message(user.id, "user", transcript, session_id)
+            await append_session_message(user.id, "assistant", spoken, session_id)
+            return ZennyVoiceTurnResponse(
+                sessionId=session_id,
+                transcript=transcript,
+                spokenText=spoken,
+                intent="chat",
+                policyTier="no_confirmation",
+                confidence="verified",
+                citations=[],
+                items=[],
+                brain="sarvam-voice-agent",
+            )
+        except VoiceAgentError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
     result = await handle_voice_turn(
         user, transcript, db, session_id=session_id, trip_id=parsed_trip
     )
@@ -63,4 +93,5 @@ async def voice_turn(
         confidence=result.confidence,
         citations=[KnowledgeCitationOut(**citation) for citation in result.citations],
         items=result.items,
+        brain="zentrip",
     )

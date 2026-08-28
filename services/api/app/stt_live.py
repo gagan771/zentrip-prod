@@ -47,7 +47,11 @@ def parse_sarvam_event(payload: dict) -> SttEvent | None:
     if event in {"vad.speech_end", "END_SPEECH"}:
         return SttEvent("speech_end")
     if event == "error":
-        return SttEvent("error", str(payload.get("message") or "Sarvam STT error"))
+        detail = str(payload.get("message") or payload.get("code") or "Sarvam STT error")
+        status = payload.get("status_code")
+        if status:
+            detail = f"{detail} ({status})"
+        return SttEvent("error", detail)
     data = payload.get("data")
     if isinstance(data, dict):
         return parse_sarvam_event(data)
@@ -85,7 +89,7 @@ async def run_streaming_stt(pcm_in: asyncio.Queue[bytes | None], on_event: Event
     raise RuntimeError("No streaming STT key configured. Set SARVAM_API_KEYS (or DEEPGRAM_API_KEY).")
 
 
-def _ws_connect_kwargs(headers: dict[str, str]) -> dict:
+def _header_kwargs(headers: dict[str, str]) -> dict:
     try:
         import inspect
 
@@ -99,6 +103,17 @@ def _ws_connect_kwargs(headers: dict[str, str]) -> dict:
     except Exception:
         pass
     return {"additional_headers": headers}
+
+
+def _sarvam_connect_kwargs(key: str) -> dict:
+    kwargs = _header_kwargs(
+        {
+            "api-subscription-key": key,
+            "Api-Subscription-Key": key,
+        }
+    )
+    kwargs["subprotocols"] = [f"api-subscription-key.{key}"]
+    return kwargs
 
 
 async def _run_sarvam(pcm_in: asyncio.Queue[bytes | None], on_event: EventHandler) -> None:
@@ -126,7 +141,6 @@ async def _run_sarvam(pcm_in: asyncio.Queue[bytes | None], on_event: EventHandle
             failures = 0
         except Exception:
             logger.exception("zenny.live Sarvam session failed on key %s; rotating", key_label(key))
-            pool.mark_limited(key, seconds=8)
             failures += 1
             if failures >= max(3, len(pool.keys)):
                 if settings.deepgram_api_key.strip():
@@ -138,7 +152,7 @@ async def _run_sarvam(pcm_in: asyncio.Queue[bytes | None], on_event: EventHandle
 
 async def _sarvam_session(key: str, pcm_in: asyncio.Queue[bytes | None], on_event: EventHandler) -> None:
     import websockets
-    from websockets.exceptions import ConnectionClosed
+    from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
     query = urlencode(
         {
@@ -149,48 +163,92 @@ async def _sarvam_session(key: str, pcm_in: asyncio.Queue[bytes | None], on_even
             "endpointing": "vad",
             "encoding": "linear16",
             "sample_rate": "16000",
-            "silence_duration_ms": "500",
-            "min_speech_duration_ms": "220",
-            "threshold": "0.32",
+            "silence_duration_ms": str(settings.voice_live_silence_ms),
+            "min_speech_duration_ms": str(settings.voice_live_min_speech_ms),
+            "threshold": "0.28",
         }
     )
     url = f"wss://api.sarvam.ai/speech-to-text-realtime/ws?{query}"
-    headers = {"api-subscription-key": key}
-    try:
-        async with websockets.connect(
-            url, max_size=2**22, ping_interval=20, **_ws_connect_kwargs(headers)
-        ) as socket:
-            sender = asyncio.create_task(_sarvam_sender(socket, pcm_in))
-            try:
-                async for raw in socket:
-                    if isinstance(raw, bytes):
-                        raw = raw.decode("utf-8", "ignore")
-                    try:
-                        payload = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-                    event = parse_sarvam_event(payload)
-                    if event is None:
-                        continue
-                    if event.kind == "error" and is_sarvam_rate_limit(event.text):
-                        raise SarvamRateLimited(event.text)
-                    await on_event(event)
-                    if event.kind == "error":
-                        break
-            finally:
-                sender.cancel()
-                await asyncio.gather(sender, return_exceptions=True)
-    except ConnectionClosed as exc:
-        code = getattr(exc, "code", None) or getattr(getattr(exc, "rcvd", None), "code", None)
-        if is_sarvam_rate_limit(str(exc), code):
-            raise SarvamRateLimited(str(exc)) from exc
-        raise
+    attempts = (
+        _sarvam_connect_kwargs(key),
+        _header_kwargs({"api-subscription-key": key, "Api-Subscription-Key": key}),
+    )
+    last_error: Exception | None = None
+    for index, kwargs in enumerate(attempts):
+        try:
+            async with websockets.connect(
+                url,
+                max_size=2**22,
+                ping_interval=20,
+                open_timeout=12,
+                **kwargs,
+            ) as socket:
+                sender = asyncio.create_task(_sarvam_sender(socket, pcm_in))
+                try:
+                    async for raw in socket:
+                        if isinstance(raw, bytes):
+                            raw = raw.decode("utf-8", "ignore")
+                        try:
+                            payload = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        event = parse_sarvam_event(payload)
+                        if event is None:
+                            continue
+                        if event.kind == "error" and is_sarvam_rate_limit(event.text):
+                            raise SarvamRateLimited(event.text)
+                        await on_event(event)
+                        if event.kind == "error":
+                            return
+                finally:
+                    sender.cancel()
+                    await asyncio.gather(sender, return_exceptions=True)
+            return
+        except SarvamRateLimited:
+            raise
+        except ConnectionClosed as exc:
+            code = getattr(exc, "code", None) or getattr(getattr(exc, "rcvd", None), "code", None)
+            if is_sarvam_rate_limit(str(exc), code):
+                raise SarvamRateLimited(str(exc)) from exc
+            raise
+        except (InvalidHandshake, OSError, TimeoutError, asyncio.TimeoutError) as exc:
+            last_error = exc
+            logger.warning("zenny.live Sarvam handshake failed (%s); retrying", type(exc).__name__)
+            continue
+    if last_error:
+        raise last_error
+
+
+
+_FLUSH_BYTES = 1280  # 40 ms of 16 kHz mono PCM16
+_FLUSH_S = 0.035
 
 
 async def _sarvam_sender(socket, pcm_in: asyncio.Queue[bytes | None]) -> None:
+    buf = bytearray()
+
+    async def flush() -> None:
+        if not buf:
+            return
+        payload = bytes(buf)
+        buf.clear()
+        await socket.send(
+            json.dumps(
+                {
+                    "event": "audio_input",
+                    "audio": base64.b64encode(payload).decode("ascii"),
+                }
+            )
+        )
+
     while True:
-        chunk = await pcm_in.get()
+        try:
+            chunk = await asyncio.wait_for(pcm_in.get(), timeout=_FLUSH_S)
+        except asyncio.TimeoutError:
+            await flush()
+            continue
         if chunk is None:
+            await flush()
             try:
                 await socket.send(json.dumps({"event": "end"}))
             except Exception:
@@ -199,14 +257,9 @@ async def _sarvam_sender(socket, pcm_in: asyncio.Queue[bytes | None]) -> None:
         if not chunk:
             await socket.send(json.dumps({"event": "ping"}))
             continue
-        await socket.send(
-            json.dumps(
-                {
-                    "event": "audio_input",
-                    "audio": base64.b64encode(chunk).decode("ascii"),
-                }
-            )
-        )
+        buf.extend(chunk)
+        if len(buf) >= _FLUSH_BYTES:
+            await flush()
 
 
 async def _run_deepgram(pcm_in: asyncio.Queue[bytes | None], on_event: EventHandler) -> None:
@@ -223,15 +276,15 @@ async def _run_deepgram(pcm_in: asyncio.Queue[bytes | None], on_event: EventHand
             "sample_rate": "16000",
             "channels": "1",
             "interim_results": "true",
-            "endpointing": "400",
-            "utterance_end_ms": "1000",
+            "endpointing": str(settings.voice_live_silence_ms),
+            "utterance_end_ms": "800",
             "punctuate": "true",
             "smart_format": "false",
         }
     )
     url = f"wss://api.deepgram.com/v1/listen?{query}"
     headers = {"Authorization": f"Token {settings.deepgram_api_key.strip()}"}
-    async with websockets.connect(url, max_size=2**22, ping_interval=15, **_ws_connect_kwargs(headers)) as socket:
+    async with websockets.connect(url, max_size=2**22, ping_interval=15, **_header_kwargs(headers)) as socket:
         sender = asyncio.create_task(_deepgram_sender(socket, pcm_in))
         try:
             async for raw in socket:
@@ -250,10 +303,26 @@ async def _run_deepgram(pcm_in: asyncio.Queue[bytes | None], on_event: EventHand
 
 
 async def _deepgram_sender(socket, pcm_in: asyncio.Queue[bytes | None]) -> None:
+    buf = bytearray()
+
+    async def flush() -> None:
+        if not buf:
+            return
+        payload = bytes(buf)
+        buf.clear()
+        await socket.send(payload)
+
     while True:
-        chunk = await pcm_in.get()
+        try:
+            chunk = await asyncio.wait_for(pcm_in.get(), timeout=_FLUSH_S)
+        except asyncio.TimeoutError:
+            await flush()
+            continue
         if chunk is None:
+            await flush()
             await socket.send(json.dumps({"type": "CloseStream"}))
             return
         if chunk:
-            await socket.send(chunk)
+            buf.extend(chunk)
+            if len(buf) >= _FLUSH_BYTES:
+                await flush()

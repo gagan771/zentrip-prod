@@ -105,11 +105,12 @@ async def live_voice(websocket: WebSocket, ticket: str = Query(...)) -> None:
         {"type": "status", "phase": "listening", "sttProvider": _stt_provider_name()}
     )
 
-    pcm_in: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=48)
+    pcm_in: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=96)
     agent_task: asyncio.Task | None = None
     generation = 0
     last_final = ""
     decode_failures = 0
+    pcm_mode = True
 
     async def emit(message: dict[str, Any]) -> None:
         try:
@@ -159,7 +160,8 @@ async def live_voice(websocket: WebSocket, ticket: str = Query(...)) -> None:
             chunks = speak_chunks(result.reply)
             if chunks:
                 await emit({"type": "status", "phase": "speaking"})
-            for chunk in chunks:
+                await emit({"type": "speak", "text": chunks[0]})
+            for chunk in chunks[1:]:
                 if gen != generation:
                     return
                 await emit({"type": "speak", "text": chunk})
@@ -213,7 +215,8 @@ async def live_voice(websocket: WebSocket, ticket: str = Query(...)) -> None:
             if incoming.get("type") == "websocket.disconnect":
                 break
             if incoming.get("bytes"):
-                decode_failures = await _enqueue_pcm(pcm_in, incoming["bytes"], None, emit, decode_failures)
+                mime = "audio/l16" if pcm_mode else None
+                decode_failures = await _enqueue_pcm(pcm_in, incoming["bytes"], mime, emit, decode_failures)
                 continue
             text = incoming.get("text")
             if not text:
@@ -225,6 +228,10 @@ async def live_voice(websocket: WebSocket, ticket: str = Query(...)) -> None:
             kind = message.get("type")
             if kind == "hangup":
                 break
+            if kind == "start":
+                encoding = str(message.get("encoding") or "linear16").casefold()
+                pcm_mode = encoding in {"linear16", "pcm", "l16", "audio/l16"}
+                continue
             if kind == "barge_in":
                 await cancel_agent()
                 await emit({"type": "status", "phase": "listening"})
@@ -265,14 +272,15 @@ async def _enqueue_pcm(
     except AudioDecodeError as exc:
         logger.warning("zenny.live decode failed: %s", exc)
         decode_failures += 1
-        if decode_failures == 3:
+        if decode_failures in {6, 18}:
             await emit(
                 {
                     "type": "error",
-                    "message": "The API could not decode the microphone clip. Check SARVAM_API_KEY and that the API can decode AAC.",
+                    "message": "Zenny could not hear the microphone yet. Keep talking — Android clips need a moment to decode.",
                 }
             )
         return decode_failures
+    decode_failures = 0
     try:
         pcm_in.put_nowait(pcm)
     except asyncio.QueueFull:

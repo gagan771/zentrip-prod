@@ -40,7 +40,9 @@ class Settings(BaseSettings):
     # router. Set LLM_PROVIDER=anthropic only when switching back to direct Claude.
     llm_provider: str = "openrouter"
     openrouter_api_key: str = ""
-    openrouter_model: str = "openrouter/free"
+    # Pin the planner model so production behavior is reproducible. Provider
+    # availability is still checked at request time and a grounded fallback is used.
+    openrouter_model: str = "qwen/qwen3-next-80b-a3b-instruct:free"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_site_url: str = ""
     openrouter_app_name: str = "Zentrip"
@@ -61,6 +63,9 @@ class Settings(BaseSettings):
     twilio_auth_token: str = ""
     twilio_from_number: str = ""
     public_base_url: str = ""
+    livekit_url: str = ""
+    livekit_api_key: str = ""
+    livekit_api_secret: str = ""
     staff_emails: str = ""
 
     @property
@@ -86,7 +91,22 @@ class Settings(BaseSettings):
     sarvam_api_key: str = ""
     sarvam_api_keys: str = ""
     sarvam_rate_limit_cooldown_seconds: int = 90
+    # Sarvam Voice Agent (Indus). Same API key as STT. Never send these to the phone.
+    sarvam_voice_app_id: str = ""
+    sarvam_voice_org_id: str = ""
+    sarvam_voice_workspace_id: str = ""
+    sarvam_voice_app_version: int = 0
+    sarvam_voice_language: str = ""
+    sarvam_voice_max_seconds: int = 480
+    sarvam_voice_text_timeout_seconds: float = 25.0
+    sarvam_voice_hotwords: str = (
+        "Taj Mahal,Agra Fort,Qutb Minar,Humayun,Fatehpur Sikri,Amber Fort,"
+        "Hawa Mahal,Jantar Mantar,UPI,112"
+    )
     voice_live_enabled: bool = True
+    # End-of-utterance wait on streaming STT. Lower = faster replies, slightly more cutoffs.
+    voice_live_silence_ms: int = 260
+    voice_live_min_speech_ms: int = 140
     # BCP-47 for Sarvam realtime. "en" → en-IN. "auto" detects Hinglish but is slower on short clips.
     voice_stt_bcp47: str = ""
 
@@ -122,6 +142,19 @@ class Settings(BaseSettings):
     @property
     def live_stt_ready(self) -> bool:
         return bool(self.sarvam_key_list or self.deepgram_api_key.strip())
+
+    @property
+    def voice_agent_ready(self) -> bool:
+        return bool(
+            self.sarvam_key_list
+            and self.sarvam_voice_app_id.strip()
+            and self.sarvam_voice_org_id.strip()
+            and self.sarvam_voice_workspace_id.strip()
+        )
+
+    @property
+    def voice_agent_hotword_list(self) -> list[str]:
+        return [word.strip() for word in self.sarvam_voice_hotwords.split(",") if word.strip()]
 
 
 settings = Settings()

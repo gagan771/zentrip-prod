@@ -64,6 +64,8 @@ _ITINERARY_TOOL = {
 _SYSTEM_PROMPT = (
     "You are Zentrip's itinerary planner for travelers visiting India. Build a day-by-day "
     "plan using ONLY the candidate places provided in the user message for factual grounding. "
+    "Use plannerContext to personalize interests, pace, walking tolerance, budget, and explicit "
+    "constraints. Prefer candidates with higher plannerScore, but never violate hard constraints. "
     "Use a candidate's exact placeId and placeName whenever you include it. Do not invent "
     "places, opening hours, prices, travel times, or historical facts. If a city has no good "
     "candidates, include fewer activities for that day rather than making one up. Call the "
@@ -83,7 +85,7 @@ def _client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
 
-def _trip_prompt(trip: Trip, candidate_places: list[dict]) -> str:
+def _trip_prompt(trip: Trip, candidate_places: list[dict], planner_context: dict | None = None) -> str:
     num_days = (trip.end_date - trip.start_date).days + 1
     return json.dumps(
         {
@@ -94,19 +96,20 @@ def _trip_prompt(trip: Trip, candidate_places: list[dict]) -> str:
                 "originCountry": trip.origin_country,
             },
             "candidatePlaces": candidate_places,
+            "plannerContext": planner_context or {},
         },
         ensure_ascii=False,
     )
 
 
-def _generate_with_anthropic(trip: Trip, candidate_places: list[dict]) -> list[dict]:
+def _generate_with_anthropic(trip: Trip, candidate_places: list[dict], planner_context: dict | None = None) -> list[dict]:
     response = _client().messages.create(
         model=settings.anthropic_model,
         max_tokens=4096,
         system=_SYSTEM_PROMPT,
         tools=[_ITINERARY_TOOL],
         tool_choice={"type": "tool", "name": "return_itinerary"},
-        messages=[{"role": "user", "content": _trip_prompt(trip, candidate_places)}],
+        messages=[{"role": "user", "content": _trip_prompt(trip, candidate_places, planner_context)}],
     )
     for block in response.content:
         if block.type == "tool_use" and block.name == "return_itinerary":
@@ -125,7 +128,7 @@ def _openrouter_tool() -> dict[str, Any]:
     }
 
 
-def _generate_with_openrouter(trip: Trip, candidate_places: list[dict]) -> list[dict]:
+def _generate_with_openrouter(trip: Trip, candidate_places: list[dict], planner_context: dict | None = None) -> list[dict]:
     if not settings.openrouter_api_key:
         raise LLMNotConfiguredError("OPENROUTER_API_KEY is not set")
 
@@ -145,7 +148,7 @@ def _generate_with_openrouter(trip: Trip, candidate_places: list[dict]) -> list[
             "model": settings.openrouter_model,
             "messages": [
                 {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": _trip_prompt(trip, candidate_places)},
+                {"role": "user", "content": _trip_prompt(trip, candidate_places, planner_context)},
             ],
             "tools": [_openrouter_tool()],
             "tool_choice": {"type": "function", "function": {"name": "return_itinerary"}},
@@ -189,12 +192,12 @@ def _validate_days(days: Any, trip: Trip, candidate_places: list[dict]) -> list[
     return validated
 
 
-def generate_itinerary_days(trip: Trip, candidate_places: list[dict]) -> list[dict]:
+def generate_itinerary_days(trip: Trip, candidate_places: list[dict], planner_context: dict | None = None) -> list[dict]:
     """Return the validated raw days list stored by the trip router."""
     if settings.llm_provider == "anthropic":
-        days = _generate_with_anthropic(trip, candidate_places)
+        days = _generate_with_anthropic(trip, candidate_places, planner_context)
     elif settings.llm_provider == "openrouter":
-        days = _generate_with_openrouter(trip, candidate_places)
+        days = _generate_with_openrouter(trip, candidate_places, planner_context)
     else:
         raise LLMProviderError(f"Unsupported LLM_PROVIDER: {settings.llm_provider}")
     return _validate_days(days, trip, candidate_places)

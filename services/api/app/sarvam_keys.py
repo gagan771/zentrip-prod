@@ -24,9 +24,11 @@ def parse_sarvam_keys(*raw_groups: str) -> list[str]:
 
 
 def is_sarvam_rate_limit(message: str | None = None, close_code: int | None = None) -> bool:
-    if close_code in {1003, 1008, 4003, 4029}:
+    if close_code in {1008, 4003, 4029, 4008}:
         return True
     text = (message or "").casefold()
+    if any(hint in text for hint in ("401", "403", "unauthorized", "invalid api", "invalid key")):
+        return False
     return any(hint in text for hint in _LIMIT_HINTS)
 
 

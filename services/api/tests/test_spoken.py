@@ -24,6 +24,16 @@ class SpokenPreviewTests(unittest.TestCase):
         self.assertGreaterEqual(len(chunks), 2)
         self.assertTrue(chunks[0].startswith("The Taj Mahal"))
 
+    def test_speak_chunks_splits_a_long_first_clause(self) -> None:
+        text = (
+            "The Taj Mahal in Agra is a white marble tomb, built for Mumtaz Mahal "
+            "by Shah Jahan along the Yamuna at first light every morning."
+        )
+        chunks = speak_chunks(text)
+        self.assertGreaterEqual(len(chunks), 2)
+        self.assertEqual(chunks[0], "The Taj Mahal in Agra is a white marble tomb,")
+        self.assertLessEqual(len(chunks[0]), 80)
+
 
 class VoiceLatencyHelperTests(unittest.TestCase):
     def test_english_is_the_default_stt_language(self) -> None:

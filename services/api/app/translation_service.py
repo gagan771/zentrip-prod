@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import json
 
+from requests import RequestException
+
 from app.config import settings
 from app.phrasebook import translate_phrase_detail
 from app.provider_http import http_session
@@ -75,12 +77,15 @@ def _openrouter_headers() -> dict[str, str]:
 
 
 def _chat(messages: list[dict], *, model: str, max_tokens: int = 180) -> str:
-    response = http_session().post(
-        f"{settings.openrouter_base_url.rstrip('/')}/chat/completions",
-        headers=_openrouter_headers(),
-        json={"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0},
-        timeout=20,
-    )
+    try:
+        response = http_session().post(
+            f"{settings.openrouter_base_url.rstrip('/')}/chat/completions",
+            headers=_openrouter_headers(),
+            json={"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0},
+            timeout=20,
+        )
+    except RequestException as exc:
+        raise LiveTranslationError("Translation provider could not be reached") from exc
     if not response.ok:
         raise LiveTranslationError(f"Translation provider returned HTTP {response.status_code}: {response.text[:400]}")
     try:

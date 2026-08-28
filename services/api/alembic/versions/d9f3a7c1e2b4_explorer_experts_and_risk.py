@@ -7,7 +7,7 @@ Revises: c4e8f2a1b6d0
 from datetime import date, datetime
 from typing import Sequence, Union
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 
@@ -114,6 +114,12 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["expert_id"], ["expert_profiles.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
+
+    # Seed rows contain JSON arrays. Do not attempt to render those values as
+    # PostgreSQL literals during offline SQL generation; online upgrades still
+    # execute the seed inserts normally.
+    if context.is_offline_mode():
+        return
 
     risk_table = sa.table(
         "risk_patterns",

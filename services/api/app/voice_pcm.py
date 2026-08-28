@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import struct
 
 
@@ -33,10 +34,8 @@ def wav_to_pcm16(audio: bytes) -> bytes:
         offset = end + (chunk_size % 2)
     if not pcm:
         raise AudioDecodeError("WAV had no data chunk")
-    if channels != 1 or bits != 16:
-        raise AudioDecodeError(f"Need 16-bit mono WAV, got {channels}ch {bits}-bit")
-    if sample_rate != 16000:
-        raise AudioDecodeError(f"Need 16 kHz WAV, got {sample_rate}")
+    if channels != 1 or bits != 16 or sample_rate != 16000:
+        raise AudioDecodeError(f"Need 16-bit 16 kHz mono WAV, got {channels}ch {bits}-bit {sample_rate}Hz")
     return pcm
 
 
@@ -44,51 +43,73 @@ def looks_like_wav(audio: bytes) -> bool:
     return len(audio) >= 12 and audio[:4] == b"RIFF" and audio[8:12] == b"WAVE"
 
 
-async def clip_to_pcm16(audio: bytes, mime: str | None = None) -> bytes:
+def looks_like_media_container(audio: bytes) -> bool:
+    if looks_like_wav(audio):
+        return True
+    if len(audio) >= 8 and audio[4:8] == b"ftyp":
+        return True
+    if audio[:4] == b"OggS":
+        return True
+    if audio[:4] == b"\x1aE\xdf\xa3":
+        return True
+    return False
+
+
+def is_raw_pcm16(audio: bytes, mime: str | None = None) -> bool:
     kind = (mime or "").casefold()
-    if "pcm" in kind or kind in {"audio/l16", "audio/linear16"}:
+    if "pcm" in kind or kind in {"audio/l16", "audio/linear16", "application/octet-stream"}:
+        return True
+    if mime:
+        return False
+    return len(audio) >= 2 and len(audio) % 2 == 0 and not looks_like_media_container(audio)
+
+
+def _frame_pcm(frame) -> bytes:
+    array = frame.to_ndarray()
+    return array.tobytes()
+
+
+def pyav_pcm16(audio: bytes) -> bytes:
+    """Decode AAC/M4A/WebM/WAV with PyAV (bundled FFmpeg libs)."""
+    import av
+
+    chunks: list[bytes] = []
+    try:
+        with av.open(io.BytesIO(audio), mode="r") as container:
+            stream = next((item for item in container.streams if item.type == "audio"), None)
+            if stream is None:
+                raise AudioDecodeError("Clip had no audio stream")
+            resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
+            for frame in container.decode(stream):
+                converted = resampler.resample(frame)
+                if not converted:
+                    continue
+                frames = converted if isinstance(converted, (list, tuple)) else [converted]
+                for item in frames:
+                    chunks.append(_frame_pcm(item))
+            leftover = resampler.resample(None)
+            if leftover:
+                frames = leftover if isinstance(leftover, (list, tuple)) else [leftover]
+                for item in frames:
+                    chunks.append(_frame_pcm(item))
+    except AudioDecodeError:
+        raise
+    except Exception as exc:
+        raise AudioDecodeError(f"Could not decode microphone clip: {exc}") from exc
+    pcm = b"".join(chunks)
+    if len(pcm) < 320:
+        raise AudioDecodeError("Decoded clip was too short")
+    return pcm
+
+
+async def clip_to_pcm16(audio: bytes, mime: str | None = None) -> bytes:
+    if not audio:
+        raise AudioDecodeError("Empty audio")
+    if is_raw_pcm16(audio, mime):
         return audio
-    if looks_like_wav(audio) or "wav" in kind:
-        return wav_to_pcm16(audio)
-    return await _ffmpeg_pcm16(audio)
-
-
-def _ffmpeg_binary() -> str:
-    try:
-        import imageio_ffmpeg
-
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
-        return "ffmpeg"
-
-
-async def _ffmpeg_pcm16(audio: bytes) -> bytes:
-    ffmpeg_bin = _ffmpeg_binary()
-    try:
-        process = await asyncio.create_subprocess_exec(
-            ffmpeg_bin,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            "pipe:0",
-            "-f",
-            "s16le",
-            "-acodec",
-            "pcm_s16le",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "pipe:1",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    except FileNotFoundError as exc:
-        raise AudioDecodeError("ffmpeg is required to decode AAC/M4A clips to PCM") from exc
-    stdout, stderr = await asyncio.wait_for(process.communicate(audio), timeout=4)
-    if process.returncode != 0 or not stdout:
-        detail = (stderr or b"").decode("utf-8", "ignore")[:240]
-        raise AudioDecodeError(detail or "ffmpeg could not decode that clip")
-    return stdout
+    if looks_like_wav(audio):
+        try:
+            return wav_to_pcm16(audio)
+        except AudioDecodeError:
+            pass
+    return await asyncio.to_thread(pyav_pcm16, audio)

@@ -22,12 +22,14 @@ from app.routers import (
     memory,
     moderation,
     onboarding,
+    planner,
     peaks,
     risk,
     social,
     trails,
     translation,
     trips,
+    zenny_agent,
     zenny_live,
     zenny_voice,
 )
@@ -72,6 +74,7 @@ app.include_router(agent.router)
 app.include_router(trips.router)
 app.include_router(onboarding.router)
 app.include_router(onboarding.config_router)
+app.include_router(planner.router)
 app.include_router(compare.router)
 app.include_router(guide.router)
 app.include_router(guardian.router)
@@ -86,6 +89,7 @@ app.include_router(knowledge.router)
 app.include_router(memory.router)
 app.include_router(zenny_voice.router)
 app.include_router(zenny_live.router)
+app.include_router(zenny_agent.router)
 app.include_router(social.router)
 app.include_router(grocery.router)
 

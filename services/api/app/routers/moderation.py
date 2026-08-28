@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.deps import get_current_staff
+from app.knowledge_ops import operational_health
 from app.models import (
     ExpertProfile,
     ExplorerProfile,
@@ -16,6 +17,7 @@ from app.models import (
     KnowledgeClaim,
     KnowledgeEntity,
     KnowledgeModerationAudit,
+    KnowledgeObservation,
     KnowledgeSource,
     Peak,
     RiskPattern,
@@ -30,6 +32,10 @@ from app.schemas import (
     KnowledgeEntityCreate,
     KnowledgeModerationAuditOut,
     KnowledgeModerationDecision,
+    KnowledgeObservationCreate,
+    KnowledgeObservationDecision,
+    KnowledgeObservationOut,
+    KnowledgeOperationalHealthOut,
     KnowledgeSourceCreate,
     ModerationDecision,
     TrailHazardCreate,
@@ -77,6 +83,96 @@ def _claim_out(row: tuple[KnowledgeClaim, KnowledgeEntity, KnowledgeSource]) -> 
         lastVerified=claim.last_verified,
         updatedAt=claim.updated_at,
     )
+
+
+def _observation_out(row: tuple[KnowledgeObservation, KnowledgeEntity, KnowledgeSource]) -> KnowledgeObservationOut:
+    observation, entity, source = row
+    return KnowledgeObservationOut(
+        id=observation.id,
+        entityId=entity.id,
+        entityName=entity.name,
+        city=entity.city,
+        sourceId=source.id,
+        sourceName=source.name,
+        sourceUrl=observation.source_url or source.source_url,
+        kind=observation.kind,
+        conflictKey=observation.conflict_key,
+        value=observation.value,
+        observedAt=observation.observed_at,
+        refreshAfter=observation.refresh_after,
+        status=observation.status,
+        reviewerId=observation.reviewer_id,
+        reviewerNote=observation.reviewer_note,
+    )
+
+
+@router.get("/knowledge/operational-health", response_model=KnowledgeOperationalHealthOut)
+async def operational_knowledge_health(
+    _staff: User = Depends(get_current_staff), db: AsyncSession = Depends(get_db)
+) -> KnowledgeOperationalHealthOut:
+    rows = (await db.scalars(select(KnowledgeObservation))).all()
+    return KnowledgeOperationalHealthOut(**operational_health(rows))
+
+
+@router.get("/knowledge/observations", response_model=list[KnowledgeObservationOut])
+async def knowledge_observation_queue(
+    status_filter: str | None = Query(default=None, alias="status", pattern="^(approved|needs_review|rejected|retired)$"),
+    _staff: User = Depends(get_current_staff), db: AsyncSession = Depends(get_db),
+) -> list[KnowledgeObservationOut]:
+    statement = (
+        select(KnowledgeObservation, KnowledgeEntity, KnowledgeSource)
+        .join(KnowledgeEntity, KnowledgeObservation.entity_id == KnowledgeEntity.id)
+        .join(KnowledgeSource, KnowledgeObservation.source_id == KnowledgeSource.id)
+        .order_by(desc(KnowledgeObservation.updated_at))
+        .limit(200)
+    )
+    if status_filter:
+        statement = statement.where(KnowledgeObservation.status == status_filter)
+    return [_observation_out(row) for row in (await db.execute(statement)).all()]
+
+
+@router.post("/knowledge/observations", response_model=KnowledgeObservationOut, status_code=status.HTTP_201_CREATED)
+async def create_knowledge_observation(
+    body: KnowledgeObservationCreate, staff: User = Depends(get_current_staff), db: AsyncSession = Depends(get_db)
+) -> KnowledgeObservationOut:
+    entity = await db.scalar(select(KnowledgeEntity).where(KnowledgeEntity.id == body.entityId))
+    source = await db.scalar(select(KnowledgeSource).where(KnowledgeSource.id == body.sourceId))
+    if not entity or not source:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entity or source not found")
+    if body.refreshAfter < body.observedAt:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="refreshAfter must not precede observedAt")
+    observation = KnowledgeObservation(
+        entity_id=entity.id, source_id=source.id, kind=body.kind, conflict_key=body.conflictKey,
+        value=body.value, source_url=body.sourceUrl or source.source_url, observed_at=body.observedAt,
+        refresh_after=body.refreshAfter, status="needs_review",
+    )
+    db.add(observation)
+    await db.flush()
+    await _audit(db, staff, "observation", observation.id, None, observation.status, "Created for operational-data review")
+    await db.commit()
+    return _observation_out((observation, entity, source))
+
+
+@router.post("/knowledge/observations/{observation_id}", response_model=KnowledgeObservationOut)
+async def review_knowledge_observation(
+    observation_id: uuid.UUID, body: KnowledgeObservationDecision, staff: User = Depends(get_current_staff), db: AsyncSession = Depends(get_db)
+) -> KnowledgeObservationOut:
+    row = (await db.execute(
+        select(KnowledgeObservation, KnowledgeEntity, KnowledgeSource)
+        .join(KnowledgeEntity, KnowledgeObservation.entity_id == KnowledgeEntity.id)
+        .join(KnowledgeSource, KnowledgeObservation.source_id == KnowledgeSource.id)
+        .where(KnowledgeObservation.id == observation_id)
+    )).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge observation not found")
+    observation, entity, source = row
+    previous = observation.status
+    observation.status = body.status
+    observation.reviewer_id = staff.id
+    observation.reviewer_note = body.reviewerNote
+    await _audit(db, staff, "observation", observation.id, previous, observation.status, body.reviewerNote)
+    await db.commit()
+    return _observation_out((observation, entity, source))
 
 
 @router.get("/knowledge/queue", response_model=KnowledgeEditorialQueueResponse)

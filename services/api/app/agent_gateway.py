@@ -11,6 +11,7 @@ The intent classifier below is deliberately simple keyword matching: the spec's 
 ranking philosophy (§47) is "start with rules, then learn," and an agent gateway is no different.
 """
 
+import asyncio
 import json
 import re
 import uuid
@@ -485,7 +486,10 @@ async def handle_message(
     if not voice:
         await build_context(user, db, trip_id=trip_id)  # noqa: F841 — real read path now; see build_context's docstring
 
-    await append_session_message(user.id, "user", text, session_id)
+    if voice:
+        asyncio.create_task(append_session_message(user.id, "user", text, session_id))
+    else:
+        await append_session_message(user.id, "user", text, session_id)
     items: list[str] = []
     # "payment" reuses the guide's citation-first KB lookup rather than its own function —
     # per 18-payment-assistance.md, it's "just a content category," not a separate service.
@@ -530,7 +534,10 @@ async def handle_message(
         reply_text = _no_tool_reply(intent)
         confidence = "estimated"
         citations = []
-    await append_session_message(user.id, "assistant", reply_text, session_id)
+    if voice:
+        asyncio.create_task(append_session_message(user.id, "assistant", reply_text, session_id))
+    else:
+        await append_session_message(user.id, "assistant", reply_text, session_id)
 
     return AgentReply(
         intent=intent, policy_tier=policy_tier, reply=reply_text, confidence=confidence, citations=citations, items=items

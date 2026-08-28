@@ -6,7 +6,7 @@ India-wide most-visited places live in ``app.knowledge_corpus``.
 """
 
 import asyncio
-from datetime import date
+from datetime import date, timedelta
 
 from sqlalchemy import select
 
@@ -17,7 +17,10 @@ from app.models import (
     KnowledgeAlias,
     KnowledgeClaim,
     KnowledgeEntity,
+    KnowledgeObservation,
     KnowledgeSource,
+    DestinationProfile,
+    DestinationRoute,
     Peak,
     RiskPattern,
     Trail,
@@ -33,9 +36,30 @@ from app.knowledge_corpus import (
     SOURCES as CORPUS_SOURCES,
 )
 from app.travel_ops_corpus import MORE_PLACES, TRAVEL_OPS, TRAVEL_SOURCES
+from app.operational_catalog import (
+    ADDITIONAL_CLAIMS,
+    CAPTURED_ON,
+    ENTITIES as OPERATIONAL_ENTITIES,
+    OBSERVATIONS as OPERATIONAL_OBSERVATIONS,
+    SOURCES as OPERATIONAL_SOURCES,
+)
+from app.india_tourism_catalog import (
+    ENTRIES as INDIA_TOURISM_ENTRIES,
+    GATEWAY_ENTRIES as INDIA_GATEWAY_ENTRIES,
+    PROFILES as INDIA_DESTINATION_PROFILES,
+    ROUTES as INDIA_DESTINATION_ROUTES,
+    SOURCES as INDIA_TOURISM_SOURCES,
+)
+from app.first_time_india_catalog import ENTRIES as FIRST_TIME_INDIA_ENTRIES, SOURCES as FIRST_TIME_INDIA_SOURCES
+from app.india_regional_expansion import (
+    ENTRIES as REGIONAL_INDIA_ENTRIES,
+    PROFILES as REGIONAL_INDIA_PROFILES,
+    ROUTES as REGIONAL_INDIA_ROUTES,
+    SOURCES as REGIONAL_INDIA_SOURCES,
+)
 from app.security import hash_password
 
-CURATED_ON = date(2026, 8, 26)
+CURATED_ON = CAPTURED_ON
 
 # Approximate landmark centroids used only to narrow camera candidates by GPS.
 LANDMARK_COORDINATES = {**CORPUS_COORDINATES}
@@ -444,7 +468,7 @@ async def _source(db, sources: dict, source_key: str) -> KnowledgeSource:
 
 async def _upsert_entry(
     db, sources: dict, entity_type: str, name: str, city: str, aliases: list[str],
-    source_key: str, claim_text: str, confidence: str,
+    source_key: str, claim_text: str, confidence: str, experience_profile: dict | None = None,
 ) -> tuple[bool, bool]:
     """Shared by the landmark and payment-guidance entry loops in main() below —
     same idempotent create-if-missing entity/claim/alias logic, only entity_type and
@@ -466,6 +490,8 @@ async def _upsert_entry(
         created_entity = True
     elif entity.latitude is None and name in LANDMARK_COORDINATES:
         entity.latitude, entity.longitude = LANDMARK_COORDINATES[name]
+    if experience_profile:
+        entity.experience_profile = {**(entity.experience_profile or {}), **experience_profile}
 
     created_claim = False
     existing_claim = (
@@ -490,6 +516,111 @@ async def _upsert_entry(
             db.add(KnowledgeAlias(entity_id=entity.id, alias=alias, language="en"))
 
     return created_entity, created_claim
+
+
+async def _upsert_operational_observation(db, source_cache: dict, item: dict) -> None:
+    """Idempotently add a sourced hours/ticket/rating snapshot.
+
+    Same source + conflict key is updated on reseed, while a different source is
+    retained as a separate observation so staff can see and resolve disagreements.
+    """
+    entity = await db.scalar(select(KnowledgeEntity).where(
+        KnowledgeEntity.name == item["entity"], KnowledgeEntity.city == item["city"]
+    ))
+    if entity is None:
+        return
+    source = await _source(db, source_cache, item["sourceKey"])
+    existing = await db.scalar(select(KnowledgeObservation).where(
+        KnowledgeObservation.entity_id == entity.id,
+        KnowledgeObservation.source_id == source.id,
+        KnowledgeObservation.kind == item["kind"],
+        KnowledgeObservation.conflict_key == item["conflictKey"],
+    ))
+    source_url = item.get("sourceUrl") or source.source_url
+    if existing is None:
+        db.add(KnowledgeObservation(
+            entity_id=entity.id,
+            source_id=source.id,
+            kind=item["kind"],
+            conflict_key=item["conflictKey"],
+            value=item["value"],
+            source_url=source_url,
+            observed_at=item["observedAt"],
+            refresh_after=item["refreshAfter"],
+            status=item.get("status", "needs_review"),
+        ))
+    else:
+        existing.value = item["value"]
+        existing.source_url = source_url
+        existing.observed_at = item["observedAt"]
+        existing.refresh_after = item["refreshAfter"]
+        # Preserve a staff decision on reseed; only the initial catalog status is
+        # allowed to set the value for a new observation.
+        if existing.status not in {"approved", "rejected", "retired"}:
+            existing.status = item.get("status", "needs_review")
+
+
+async def _upsert_destination_profile(db, source_cache: dict, item: tuple) -> None:
+    (name, state, region, destination_kind, tags, best_seasons, min_days, max_days,
+     altitude_m, gateway_city, gateway_airports, access_notes, safety_notes,
+     accessibility, source_key) = item
+    entity = await db.scalar(select(KnowledgeEntity).where(KnowledgeEntity.name == name))
+    if entity is None:
+        return
+    source = await _source(db, source_cache, source_key)
+    profile = await db.scalar(select(DestinationProfile).where(DestinationProfile.entity_id == entity.id))
+    if profile is None:
+        profile = DestinationProfile(entity_id=entity.id)
+        db.add(profile)
+    profile.state = state
+    profile.region = region
+    profile.destination_kind = destination_kind
+    profile.tags = tags
+    profile.best_seasons = best_seasons
+    profile.typical_stay_min_days = min_days
+    profile.typical_stay_max_days = max_days
+    profile.altitude_m = altitude_m
+    profile.gateway_city = gateway_city
+    profile.gateway_airports = gateway_airports
+    profile.access_notes = access_notes
+    profile.safety_notes = safety_notes
+    profile.accessibility = accessibility
+    profile.source_id = source.id
+    profile.last_verified = CURATED_ON
+    profile.refresh_after = CURATED_ON + timedelta(days=90)
+    if profile.status not in {"approved", "rejected", "retired"}:
+        profile.status = "published"
+
+
+async def _upsert_destination_route(db, source_cache: dict, item: tuple) -> None:
+    (origin_name, destination_name, mode, distance_km, min_minutes, max_minutes,
+     season_notes, source_key) = item
+    origin = await db.scalar(select(KnowledgeEntity).where(KnowledgeEntity.name == origin_name))
+    destination = await db.scalar(select(KnowledgeEntity).where(KnowledgeEntity.name == destination_name))
+    if origin is None or destination is None:
+        return
+    source = await _source(db, source_cache, source_key)
+    route = await db.scalar(select(DestinationRoute).where(
+        DestinationRoute.origin_entity_id == origin.id,
+        DestinationRoute.destination_entity_id == destination.id,
+        DestinationRoute.mode == mode,
+    ))
+    if route is None:
+        route = DestinationRoute(
+            origin_entity_id=origin.id,
+            destination_entity_id=destination.id,
+            mode=mode,
+        )
+        db.add(route)
+    route.distance_km = distance_km
+    route.typical_min_minutes = min_minutes
+    route.typical_max_minutes = max_minutes
+    route.season_notes = season_notes
+    route.source_id = source.id
+    route.observed_at = CURATED_ON
+    route.refresh_after = CURATED_ON + timedelta(days=30)
+    if route.status not in {"approved", "rejected", "retired"}:
+        route.status = "published"
 
 
 async def main() -> None:
@@ -540,6 +671,68 @@ async def main() -> None:
             ce, cc = await _upsert_entry(db, SAFETY_SOURCES, "safety_info", name, city, aliases, source_key, claim_text, confidence)
             created_entities += ce
             created_claims += cc
+
+        for name, city, aliases, source_key, entity_type, claim_text in OPERATIONAL_ENTITIES:
+            ce, cc = await _upsert_entry(db, OPERATIONAL_SOURCES, entity_type, name, city, aliases, source_key, claim_text, "verified")
+            created_entities += ce
+            created_claims += cc
+
+        for observation in OPERATIONAL_OBSERVATIONS:
+            await _upsert_operational_observation(db, OPERATIONAL_SOURCES, observation)
+
+        for name, city, aliases, source_key, claim_text, confidence in ADDITIONAL_CLAIMS:
+            ce, cc = await _upsert_entry(db, OPERATIONAL_SOURCES, "monument", name, city, aliases, source_key, claim_text, confidence)
+            created_entities += ce
+            created_claims += cc
+
+        for tourism_entry in INDIA_TOURISM_ENTRIES:
+            if len(tourism_entry) == 7:
+                name, city, aliases, source_key, entity_type, claim_text, experience_profile = tourism_entry
+            else:
+                name, city, aliases, source_key, claim_text, experience_profile = tourism_entry
+                entity_type = "activity"
+            ce, cc = await _upsert_entry(
+                db, INDIA_TOURISM_SOURCES, entity_type, name, city, aliases, source_key,
+                claim_text, "estimated", experience_profile=experience_profile,
+            )
+            created_entities += ce
+            created_claims += cc
+
+        for name, city, aliases, source_key, entity_type, claim_text in INDIA_GATEWAY_ENTRIES:
+            ce, cc = await _upsert_entry(
+                db, INDIA_TOURISM_SOURCES, entity_type, name, city, aliases, source_key,
+                claim_text, "estimated",
+            )
+            created_entities += ce
+            created_claims += cc
+
+        for profile in INDIA_DESTINATION_PROFILES:
+            await _upsert_destination_profile(db, INDIA_TOURISM_SOURCES, profile)
+
+        for route in INDIA_DESTINATION_ROUTES:
+            await _upsert_destination_route(db, INDIA_TOURISM_SOURCES, route)
+
+        for name, city, aliases, source_key, entity_type, claim_text, confidence, experience_profile in FIRST_TIME_INDIA_ENTRIES:
+            ce, cc = await _upsert_entry(
+                db, FIRST_TIME_INDIA_SOURCES, entity_type, name, city, aliases, source_key,
+                claim_text, confidence, experience_profile=experience_profile,
+            )
+            created_entities += ce
+            created_claims += cc
+
+        for name, city, aliases, source_key, entity_type, claim_text, experience_profile in REGIONAL_INDIA_ENTRIES:
+            ce, cc = await _upsert_entry(
+                db, REGIONAL_INDIA_SOURCES, entity_type, name, city, aliases, source_key,
+                claim_text, "estimated", experience_profile=experience_profile,
+            )
+            created_entities += ce
+            created_claims += cc
+
+        for profile in REGIONAL_INDIA_PROFILES:
+            await _upsert_destination_profile(db, REGIONAL_INDIA_SOURCES, profile)
+
+        for route in REGIONAL_INDIA_ROUTES:
+            await _upsert_destination_route(db, REGIONAL_INDIA_SOURCES, route)
 
         for trail_seed in TRAIL_SEEDS:
             trail = (await db.execute(select(Trail).where(Trail.slug == trail_seed["slug"]))).scalar_one_or_none()

@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 
 from app.stt_live import parse_deepgram_event, parse_sarvam_event
@@ -17,11 +18,12 @@ class SttEventParseTests(unittest.TestCase):
 
     def test_sarvam_vad_and_error(self) -> None:
         start = parse_sarvam_event({"event": "vad.speech_start"})
-        error = parse_sarvam_event({"event": "error", "message": "quota"})
+        error = parse_sarvam_event({"event": "error", "message": "quota", "code": "rate_limited", "status_code": 429})
         assert start is not None
         assert error is not None
         self.assertEqual(start.kind, "speech_start")
         self.assertEqual(error.kind, "error")
+        self.assertIn("429", error.text)
 
     def test_deepgram_interim_and_final(self) -> None:
         interim = parse_deepgram_event(
@@ -47,6 +49,21 @@ class PcmDecodeTests(unittest.TestCase):
         wav = _silent_wav()
         self.assertTrue(looks_like_wav(wav))
         pcm = wav_to_pcm16(wav)
+        self.assertGreater(len(pcm), 0)
+        self.assertEqual(len(pcm) % 2, 0)
+
+    def test_raw_pcm_skips_container_decode(self) -> None:
+        from app.voice_pcm import clip_to_pcm16, is_raw_pcm16
+
+        pcm = b"\x00\x01" * 160
+        self.assertTrue(is_raw_pcm16(pcm, "audio/l16"))
+        self.assertEqual(asyncio.run(clip_to_pcm16(pcm, "audio/l16")), pcm)
+
+    def test_pyav_decodes_wav(self) -> None:
+        from app.voice_pcm import pyav_pcm16
+
+        wav = _silent_wav()
+        pcm = pyav_pcm16(wav)
         self.assertGreater(len(pcm), 0)
         self.assertEqual(len(pcm) % 2, 0)
 

@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Zenny web call</title>
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client@2.15.7/dist/livekit-client.umd.js"></script>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: linear-gradient(#e8f3dc, #cfe6b8 45%, #9ec27a);
+      color: #1c2a16;
+    }
+    main {
+      max-width: 28rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+    h1 { font-size: 1.45rem; font-weight: 650; margin: 0 0 0.35rem; }
+    p.lead { margin: 0 0 1.25rem; opacity: 0.8; }
+    label { display: block; font-size: 0.8rem; margin: 0.7rem 0 0.3rem; }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 0.65rem 0.75rem;
+      border: 1px solid #8aaa6c;
+      border-radius: 0.6rem;
+      background: #f7fbee;
+      font-size: 1rem;
+    }
+    .row { display: flex; gap: 0.5rem; margin-top: 1rem; flex-wrap: wrap; }
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 0.7rem 1.1rem;
+      font-weight: 650;
+      cursor: pointer;
+      background: #2f5d1e;
+      color: #f4ffe8;
+    }
+    button.secondary { background: #eef6e4; color: #2f5d1e; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    #status {
+      margin-top: 1rem;
+      padding: 0.75rem 0.85rem;
+      border-radius: 0.7rem;
+      background: #f7fbee;
+      min-height: 2.5rem;
+      white-space: pre-wrap;
+      font-size: 0.9rem;
+    }
+    #remote { margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Zenny web call</h1>
+    <p class="lead">Local test only. Sign in, then start a call. Allow the microphone when the browser asks.</p>
+    <label for="email">Email</label>
+    <input id="email" type="email" autocomplete="username" />
+    <label for="password">Password</label>
+    <input id="password" type="password" autocomplete="current-password" />
+    <label for="name">Name (for new accounts)</label>
+    <input id="name" type="text" value="Web tester" />
+    <div class="row">
+      <button type="button" id="signin">Sign in</button>
+      <button type="button" class="secondary" id="register">Create account</button>
+    </div>
+    <div class="row">
+      <button type="button" id="start" disabled>Start call</button>
+      <button type="button" class="secondary" id="hangup" disabled>Hang up</button>
+    </div>
+    <div id="status">Sign in to check LiveKit.</div>
+    <div id="remote"></div>
+  </main>
+  <script>
+    const Livekit = window.LivekitClient;
+    const statusEl = document.getElementById("status");
+    let accessToken = "";
+    let room = null;
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function authHeaders() {
+      return {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + accessToken,
+      };
+    }
+
+    async function readError(response) {
+      try {
+        const body = await response.json();
+        return body.detail || JSON.stringify(body);
+      } catch {
+        return response.status + " " + response.statusText;
+      }
+    }
+
+    async function refreshStatus() {
+      const response = await fetch("/v1/zenny/voice/status", { headers: authHeaders() });
+      if (!response.ok) throw new Error(await readError(response));
+      const data = await response.json();
+      document.getElementById("start").disabled = !data.livekitReady;
+      setStatus(
+        data.livekitReady
+          ? "LiveKit is ready. Start a call."
+          : "API is up, but LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET on the API."
+      );
+    }
+
+    async function afterAuth(data) {
+      accessToken = data.accessToken;
+      await refreshStatus();
+    }
+
+    document.getElementById("signin").onclick = async () => {
+      try {
+        const response = await fetch("/v1/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: document.getElementById("email").value,
+            password: document.getElementById("password").value,
+          }),
+        });
+        if (!response.ok) throw new Error(await readError(response));
+        await afterAuth(await response.json());
+      } catch (error) {
+        setStatus(String(error.message || error));
+      }
+    };
+
+    document.getElementById("register").onclick = async () => {
+      try {
+        const response = await fetch("/v1/auth/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: document.getElementById("email").value,
+            password: document.getElementById("password").value,
+            name: document.getElementById("name").value || "Web tester",
+          }),
+        });
+        if (!response.ok) throw new Error(await readError(response));
+        await afterAuth(await response.json());
+      } catch (error) {
+        setStatus(String(error.message || error));
+      }
+    };
+
+    async function hangUp() {
+      if (room) {
+        try { await room.disconnect(); } catch {}
+        room = null;
+      }
+      document.getElementById("remote").replaceChildren();
+      document.getElementById("hangup").disabled = true;
+      document.getElementById("start").disabled = !accessToken;
+      setStatus("Call ended.");
+    }
+
+    document.getElementById("hangup").onclick = hangUp;
+
+    document.getElementById("start").onclick = async () => {
+      try {
+        document.getElementById("start").disabled = true;
+        setStatus("Asking LiveKit for a room…");
+        const minted = await fetch("/v1/zenny/voice/token", {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({}),
+        });
+        if (!minted.ok) throw new Error(await readError(minted));
+        const session = await minted.json();
+        room = new Livekit.Room();
+        room.on(Livekit.RoomEvent.TrackSubscribed, (track) => {
+          if (track.kind === "audio") {
+            const el = track.attach();
+            el.autoplay = true;
+            document.getElementById("remote").replaceChildren(el);
+            setStatus("Zenny is in the room. Speak — you can interrupt her.");
+          }
+        });
+        room.on(Livekit.RoomEvent.Disconnected, () => {
+          setStatus("Disconnected from LiveKit.");
+        });
+        await room.connect(session.url, session.token);
+        await room.localParticipant.setMicrophoneEnabled(true);
+        document.getElementById("hangup").disabled = false;
+        setStatus("Connected to " + session.room + ". Waiting for Zenny’s voice…\nIf this stays here, the agent worker is not running.");
+      } catch (error) {
+        document.getElementById("start").disabled = false;
+        setStatus(String(error.message || error));
+      }
+    };
+  </script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -97,6 +97,92 @@ class Trip(Base):
 
     days: Mapped[list["ItineraryDay"]] = relationship(back_populates="trip", cascade="all, delete-orphan")
     bookings: Mapped[list["TripBooking"]] = relationship(back_populates="trip", cascade="all, delete-orphan")
+    plans: Mapped[list["ItineraryPlan"]] = relationship(back_populates="trip", cascade="all, delete-orphan")
+
+
+class TravelerProfile(Base):
+    """Structured, user-controlled experience preferences used by the planner."""
+
+    __tablename__ = "traveler_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), unique=True, index=True, nullable=False)
+    preferences: Mapped[dict] = mapped_column(_JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
+
+
+class ItineraryPlan(Base):
+    """Immutable-ish versioned adaptive plan; legacy itinerary_days mirrors the latest plan."""
+
+    __tablename__ = "itinerary_plans"
+    __table_args__ = (UniqueConstraint("trip_id", "version", name="uq_itinerary_plans_trip_version"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trip_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("trips.id"), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="draft", nullable=False)
+    model: Mapped[str] = mapped_column(String(150), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(50), default="adaptive-v1", nullable=False)
+    days: Mapped[list[dict]] = mapped_column(_JSON, nullable=False)
+    preferences_snapshot: Mapped[dict] = mapped_column(_JSON, nullable=False, default=dict)
+    source_claim_ids: Mapped[list[str]] = mapped_column(_JSON, nullable=False, default=list)
+    validation: Mapped[dict] = mapped_column(_JSON, nullable=False, default=dict)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    trip: Mapped[Trip] = relationship(back_populates="plans")
+
+
+class ItineraryFeedback(Base):
+    """A user/staff decision on a generated plan item, retained for ranking data."""
+
+    __tablename__ = "itinerary_feedback"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plan_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("itinerary_plans.id"), nullable=False, index=True)
+    trip_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("trips.id"), nullable=False, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    item_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    action: Mapped[str] = mapped_column(String(30), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    replacement_place_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    details: Mapped[dict] = mapped_column(_JSON, nullable=False, default=dict)
+    actor: Mapped[str] = mapped_column(String(20), default="user", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class EditorialRule(Base):
+    """Staff-approved operational guidance that can influence future plans."""
+
+    __tablename__ = "editorial_rules"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(100), default="India", nullable=False)
+    condition: Mapped[str] = mapped_column(String(500), nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, default=50, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="needs_review", nullable=False)
+    source_feedback_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("itinerary_feedback.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
+
+
+class PlannerRun(Base):
+    """Traceability record for retrieval, model, validation, and fallback behavior."""
+
+    __tablename__ = "planner_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trip_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("trips.id"), nullable=False, index=True)
+    plan_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("itinerary_plans.id"), nullable=True, index=True)
+    model: Mapped[str] = mapped_column(String(150), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    retrieval_ids: Mapped[list[str]] = mapped_column(_JSON, nullable=False, default=list)
+    validation_passed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 
 
 class ItineraryDay(Base):
@@ -156,6 +242,9 @@ class KnowledgeEntity(Base):
     source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     confidence: Mapped[str] = mapped_column(String(20), default="verified", nullable=False)
     last_verified: Mapped[date] = mapped_column(Date, nullable=False)
+    # Structured experience signals used by the adaptive planner. Claims remain the
+    # factual source; this profile only describes fit, effort, timing, and booking.
+    experience_profile: Mapped[dict | None] = mapped_column(_JSON, nullable=True)
     # The legacy fields above remain as a concise itinerary-planning summary. New
     # Guide answers are built from the claim/source tables below, so every sentence
     # returned to a traveler can carry a specific citation.
@@ -201,6 +290,81 @@ class KnowledgeClaim(Base):
     confidence: Mapped[str] = mapped_column(String(20), default="verified", nullable=False)
     verification_status: Mapped[str] = mapped_column(String(20), default="published", nullable=False)
     last_verified: Mapped[date] = mapped_column(Date, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
+
+
+class KnowledgeObservation(Base):
+    """Fresh, structured operational data attached to a place.
+
+    Unlike historical claims, hours, ticket links, and ratings expire quickly and
+    may disagree across sources. Observations therefore have an explicit refresh
+    date, conflict key, and staff review status.
+    """
+
+    __tablename__ = "knowledge_observations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("knowledge_entities.id"), nullable=False, index=True)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("knowledge_sources.id"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)  # hours|ticketing|rating|activity
+    conflict_key: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    value: Mapped[dict] = mapped_column(_JSON, nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    observed_at: Mapped[date] = mapped_column(Date, nullable=False)
+    refresh_after: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="needs_review", nullable=False)
+    reviewer_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    reviewer_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
+
+
+class DestinationProfile(Base):
+    """Normalized planning metadata for a destination or experience anchor."""
+
+    __tablename__ = "destination_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("knowledge_entities.id"), unique=True, index=True, nullable=False)
+    state: Mapped[str] = mapped_column(String(100), nullable=False)
+    region: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    destination_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    tags: Mapped[list[str]] = mapped_column(_JSON, nullable=False, default=list)
+    best_seasons: Mapped[list[str]] = mapped_column(_JSON, nullable=False, default=list)
+    typical_stay_min_days: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    typical_stay_max_days: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    altitude_m: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gateway_city: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    gateway_airports: Mapped[list[str]] = mapped_column(_JSON, nullable=False, default=list)
+    access_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    safety_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    accessibility: Mapped[dict] = mapped_column(_JSON, nullable=False, default=dict)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("knowledge_sources.id"), nullable=False)
+    last_verified: Mapped[date] = mapped_column(Date, nullable=False)
+    refresh_after: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="published", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
+
+
+class DestinationRoute(Base):
+    """Estimated route edge used for transfer-aware itinerary planning."""
+
+    __tablename__ = "destination_routes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    origin_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("knowledge_entities.id"), nullable=False, index=True)
+    destination_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("knowledge_entities.id"), nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String(30), nullable=False)  # road|rail|air|ferry|mixed
+    distance_km: Mapped[float | None] = mapped_column(Float, nullable=True)
+    typical_min_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    typical_max_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    season_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("knowledge_sources.id"), nullable=False)
+    observed_at: Mapped[date] = mapped_column(Date, nullable=False)
+    refresh_after: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="published", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
 
@@ -573,3 +737,44 @@ class ExpertCase(Base):
     response: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
+
+
+class BuddyWaitlistRequest(Base):
+    """Traveler join/waitlist intent for a demo group — no chat until mutual consent (spec 10)."""
+
+    __tablename__ = "buddy_waitlist_requests"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    group_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    group_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="queued", nullable=False)  # queued|notified|withdrawn
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
+
+
+class BuddyPairConsent(Base):
+    """Two queued travelers on the same group. Chat unlocks only after both sides consent."""
+
+    __tablename__ = "buddy_pair_consents"
+    __table_args__ = (UniqueConstraint("group_id", "user_low_id", "user_high_id", name="uq_buddy_pair_group_users"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    group_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    user_low_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    user_high_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    low_consented_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    high_consented_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
+
+
+class BuddyMessage(Base):
+    __tablename__ = "buddy_messages"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    pair_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("buddy_pair_consents.id"), nullable=False, index=True)
+    sender_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
