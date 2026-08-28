@@ -15,6 +15,7 @@ from typing import Literal
 from urllib.parse import urlencode
 
 from app.config import settings
+from app.sarvam_keys import is_sarvam_rate_limit, key_label, sarvam_pool
 
 logger = logging.getLogger("zentrip.voice")
 
@@ -70,14 +71,22 @@ def parse_deepgram_event(payload: dict) -> SttEvent | None:
     return SttEvent("partial", transcript)
 
 
+class SarvamRateLimited(Exception):
+    pass
+
+
+class SarvamHangup(Exception):
+    pass
+
+
 async def run_streaming_stt(pcm_in: asyncio.Queue[bytes | None], on_event: EventHandler) -> None:
-    if settings.sarvam_api_key.strip():
+    if settings.sarvam_key_list:
         await _run_sarvam(pcm_in, on_event)
         return
     if settings.deepgram_api_key.strip():
         await _run_deepgram(pcm_in, on_event)
         return
-    raise RuntimeError("No streaming STT key configured. Set SARVAM_API_KEY (preferred) or DEEPGRAM_API_KEY.")
+    raise RuntimeError("No streaming STT key configured. Set SARVAM_API_KEYS (or DEEPGRAM_API_KEY).")
 
 
 def _ws_connect_kwargs(headers: dict[str, str]) -> dict:
@@ -97,7 +106,45 @@ def _ws_connect_kwargs(headers: dict[str, str]) -> dict:
 
 
 async def _run_sarvam(pcm_in: asyncio.Queue[bytes | None], on_event: EventHandler) -> None:
+    pool = sarvam_pool()
+    failures = 0
+    while True:
+        key = pool.acquire()
+        if key is None:
+            wait = min(15.0, max(0.5, pool.seconds_until_ready()))
+            failures += 1
+            if failures >= 3:
+                await on_event(
+                    SttEvent("error", "All Sarvam accounts are rate-limited. The call will retry automatically.")
+                )
+                failures = 0
+            await asyncio.sleep(wait)
+            continue
+        try:
+            logger.info("zenny.live using Sarvam key %s (%s ready)", key_label(key), pool.ready_count)
+            await _sarvam_session(key, pcm_in, on_event)
+            return
+        except SarvamHangup:
+            return
+        except SarvamRateLimited:
+            pool.mark_limited(key)
+            logger.warning("zenny.live Sarvam key %s rate-limited; rotating", key_label(key))
+            failures = 0
+        except Exception:
+            logger.exception("zenny.live Sarvam session failed on key %s; rotating", key_label(key))
+            pool.mark_limited(key, seconds=8)
+            failures += 1
+            if failures >= max(3, len(pool.keys)):
+                if settings.deepgram_api_key.strip():
+                    await _run_deepgram(pcm_in, on_event)
+                    return
+                await on_event(SttEvent("error", "Live speech recognition dropped. Try the call again."))
+                return
+
+
+async def _sarvam_session(key: str, pcm_in: asyncio.Queue[bytes | None], on_event: EventHandler) -> None:
     import websockets
+    from websockets.exceptions import ConnectionClosed
 
     query = urlencode(
         {
@@ -114,33 +161,46 @@ async def _run_sarvam(pcm_in: asyncio.Queue[bytes | None], on_event: EventHandle
         }
     )
     url = f"wss://api.sarvam.ai/speech-to-text-realtime/ws?{query}"
-    headers = {"api-subscription-key": settings.sarvam_api_key.strip()}
-    async with websockets.connect(url, max_size=2**22, ping_interval=20, **_ws_connect_kwargs(headers)) as socket:
-        sender = asyncio.create_task(_sarvam_sender(socket, pcm_in))
-        try:
-            async for raw in socket:
-                if isinstance(raw, bytes):
-                    raw = raw.decode("utf-8", "ignore")
-                try:
-                    payload = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                event = parse_sarvam_event(payload)
-                if event is None:
-                    continue
-                await on_event(event)
-                if event.kind == "error":
-                    break
-        finally:
-            sender.cancel()
-            await asyncio.gather(sender, return_exceptions=True)
+    headers = {"api-subscription-key": key}
+    try:
+        async with websockets.connect(
+            url, max_size=2**22, ping_interval=20, **_ws_connect_kwargs(headers)
+        ) as socket:
+            sender = asyncio.create_task(_sarvam_sender(socket, pcm_in))
+            try:
+                async for raw in socket:
+                    if isinstance(raw, bytes):
+                        raw = raw.decode("utf-8", "ignore")
+                    try:
+                        payload = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    event = parse_sarvam_event(payload)
+                    if event is None:
+                        continue
+                    if event.kind == "error" and is_sarvam_rate_limit(event.text):
+                        raise SarvamRateLimited(event.text)
+                    await on_event(event)
+                    if event.kind == "error":
+                        break
+            finally:
+                sender.cancel()
+                await asyncio.gather(sender, return_exceptions=True)
+    except ConnectionClosed as exc:
+        code = getattr(exc, "code", None) or getattr(getattr(exc, "rcvd", None), "code", None)
+        if is_sarvam_rate_limit(str(exc), code):
+            raise SarvamRateLimited(str(exc)) from exc
+        raise
 
 
 async def _sarvam_sender(socket, pcm_in: asyncio.Queue[bytes | None]) -> None:
     while True:
         chunk = await pcm_in.get()
         if chunk is None:
-            await socket.send(json.dumps({"event": "end"}))
+            try:
+                await socket.send(json.dumps({"event": "end"}))
+            except Exception:
+                pass
             return
         if not chunk:
             await socket.send(json.dumps({"event": "ping"}))

@@ -60,5 +60,21 @@ class BackchannelTests(unittest.TestCase):
         self.assertFalse(is_backchannel("okay how far is Agra"))
 
 
-if __name__ == "__main__":
-    unittest.main()
+class SarvamKeyPoolTests(unittest.TestCase):
+    def test_parses_and_dedupes_keys(self) -> None:
+        from app.sarvam_keys import parse_sarvam_keys
+
+        keys = parse_sarvam_keys("aaa", "aaa, bbb;ccc\nddd")
+        self.assertEqual(keys, ["aaa", "bbb", "ccc", "ddd"])
+
+    def test_skips_rate_limited_keys_then_recovers(self) -> None:
+        from app.sarvam_keys import SarvamKeyPool, is_sarvam_rate_limit
+
+        pool = SarvamKeyPool(keys=["one", "two", "three"], cooldown_seconds=30)
+        first = pool.acquire(now=100)
+        pool.mark_limited(first, now=100)
+        second = pool.acquire(now=100)
+        self.assertNotEqual(second, first)
+        self.assertTrue(is_sarvam_rate_limit("quota exceeded", 1003))
+        recovered = pool.acquire(now=140)
+        self.assertEqual(recovered, first)

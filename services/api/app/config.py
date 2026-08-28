@@ -82,8 +82,10 @@ class Settings(BaseSettings):
     voice_warmup: bool = True
     # Optional Deepgram key for multilingual translator STT. When empty, faster-whisper is used.
     deepgram_api_key: str = ""
-    # Paid streaming STT for the live companion. Prefer Sarvam; Deepgram is the fallback.
+    # Paid streaming STT. One key, or many for rate-limit failover (comma-separated).
     sarvam_api_key: str = ""
+    sarvam_api_keys: str = ""
+    sarvam_rate_limit_cooldown_seconds: int = 90
     voice_live_enabled: bool = True
     # BCP-47 for Sarvam realtime. "en" → en-IN. "auto" detects Hinglish but is slower on short clips.
     voice_stt_bcp47: str = ""
@@ -112,8 +114,14 @@ class Settings(BaseSettings):
         return mapping.get(raw, "en-IN")
 
     @property
+    def sarvam_key_list(self) -> list[str]:
+        from app.sarvam_keys import parse_sarvam_keys
+
+        return parse_sarvam_keys(self.sarvam_api_key, self.sarvam_api_keys)
+
+    @property
     def live_stt_ready(self) -> bool:
-        return bool(self.sarvam_api_key.strip() or self.deepgram_api_key.strip())
+        return bool(self.sarvam_key_list or self.deepgram_api_key.strip())
 
 
 settings = Settings()
