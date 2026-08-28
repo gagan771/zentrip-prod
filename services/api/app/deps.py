@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.models import User
 from app.security import decode_access_token
+from app.config import settings
 
 bearer_scheme = HTTPBearer()
 
@@ -23,4 +24,11 @@ async def get_current_user(
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    return user
+
+
+async def get_current_staff(user: User = Depends(get_current_user)) -> User:
+    """Protect moderation actions with an explicit role or configured allowlist."""
+    if user.role != "staff" and user.email.casefold() not in settings.staff_email_list:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Staff access required")
     return user
