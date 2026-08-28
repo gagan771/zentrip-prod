@@ -2,68 +2,39 @@ import {
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
   useAudioRecorder,
+  useAudioRecorderState,
 } from 'expo-audio';
-import { File } from 'expo-file-system';
-import { Platform } from 'react-native';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { pcmToArrayBuffer, pcmStreamingSupported, startPcmMic } from './pcm-stream';
+import { decodeBase64Bytes, enqueuePcmPlayback, stopPcmPlayback } from './pcm-play';
+import { livekitNativeAvailable } from './voice/livekit-available';
+import { connectLivekitRoom } from './voice/livekit';
 import {
   CALL_AUDIO_MODE,
-  LIVE_RECORDING,
-  speakChunk,
+  VOICE_RECORDING,
+  speakAsync,
   stopRecordingSafely,
   stopSpeaking,
 } from './speech';
 import {
-  createZennyLiveSession,
+  createZennyAgentSession,
+  createZennyLivekitToken,
+  getVoiceSessionId,
+  getZennyVoiceStatus,
   sendZennyVoiceTurn,
-  zennyLiveSocketUrl,
+  zennyAgentSocketUrl,
   type ZennyVoiceTurn,
 } from './zenny-voice';
 import { useStore } from '../store/useStore';
 
 export type CallPhase = 'idle' | 'connecting' | 'live' | 'speaking';
+export type CallMode = 'tap' | 'duplex';
 
-const CLIP_MS = 380;
-const POLL_MS = 40;
-const RECORDER_SETTLE_MS = 120;
+const MIN_TALK_MS = 600;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
-
-async function readClip(uri: string): Promise<{ mime: string; data: string } | null> {
-  try {
-    const lower = uri.toLowerCase();
-    const mime = lower.includes('.wav')
-      ? 'audio/wav'
-      : lower.includes('.webm')
-        ? 'audio/webm'
-        : 'audio/m4a';
-    // React Native's fetch does not reliably read file:// recording URIs on
-    // Android. Use Expo's native reader for device recordings; keep fetch for
-    // web where the URI is a browser Blob URL.
-    if (Platform.OS !== 'web') {
-      const data = await new File(uri).base64();
-      return data.length >= 80 ? { mime, data } : null;
-    }
-    const response = await fetch(uri);
-    const buffer = await response.arrayBuffer();
-    if (buffer.byteLength < 64) return null;
-    return { mime, data: arrayBufferToBase64(buffer) };
-  } catch {
-    return null;
-  }
 }
 
 function normalizeLevel(db: number): number {
@@ -72,66 +43,66 @@ function normalizeLevel(db: number): number {
 }
 
 export function useZennyCall() {
-  const recorder = useAudioRecorder(LIVE_RECORDING);
+  const recorder = useAudioRecorder(VOICE_RECORDING);
+  const recState = useAudioRecorderState(recorder, 80);
   const tripId = useStore((state) => state.activeTripId);
+
   const [phase, setPhase] = useState<CallPhase>('idle');
+  const [mode, setMode] = useState<CallMode>('tap');
   const [turns, setTurns] = useState<ZennyVoiceTurn[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [level, setLevel] = useState(0);
   const [pending, setPending] = useState(false);
   const [partial, setPartial] = useState('');
+  const [agentReady, setAgentReady] = useState(false);
+  const [livekitReady, setLivekitReady] = useState(false);
 
   const recorderRef = useRef(recorder);
   const phaseRef = useRef<CallPhase>('idle');
-  const active = useRef(false);
-  const looping = useRef(false);
+  const modeRef = useRef<CallMode>('tap');
+  const busy = useRef(false);
+  const startedAt = useRef(0);
   const socketRef = useRef<WebSocket | null>(null);
-  const lastLevel = useRef(0);
-  const freshReply = useRef(true);
-  const recorderChain = useRef(Promise.resolve());
-
+  const stopMicRef = useRef<(() => Promise<void>) | null>(null);
+  const leaveLivekitRef = useRef<(() => Promise<void>) | null>(null);
+  const duplexRef = useRef(false);
   recorderRef.current = recorder;
-
-  const withRecorder = useCallback(<T,>(operation: () => Promise<T>): Promise<T> => {
-    const run = recorderChain.current.then(operation, operation);
-    recorderChain.current = run.then(
-      () => undefined,
-      () => undefined
-    );
-    return run;
-  }, []);
 
   const updatePhase = useCallback((next: CallPhase) => {
     phaseRef.current = next;
     setPhase(next);
   }, []);
 
-  const publishLevel = useCallback((next: number) => {
-    if (Math.abs(next - lastLevel.current) < 0.06) return;
-    lastLevel.current = next;
-    setLevel(next);
+  const resetLevels = useCallback(() => {
+    setLevel(0);
+    setPending(false);
+    setPartial('');
   }, []);
 
-  const sendJson = useCallback((message: object) => {
-    const socket = socketRef.current;
-    if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+  useEffect(() => {
+    let cancelled = false;
+    void getZennyVoiceStatus()
+      .then((status) => {
+        if (!cancelled) {
+          setAgentReady(status.agentReady);
+          setLivekitReady(Boolean(status.livekitReady));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setAgentReady(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const openMic = useCallback(async () => {
-    await setAudioModeAsync(CALL_AUDIO_MODE);
-    await withRecorder(async () => {
-      const rec = recorderRef.current;
-      await stopRecordingSafely(rec);
-      await delay(RECORDER_SETTLE_MS);
-      await rec.prepareToRecordAsync();
-    });
-  }, [withRecorder]);
+  useEffect(() => {
+    if (phase !== 'live' || mode === 'duplex') return;
+    if (typeof recState.metering === 'number') setLevel(normalizeLevel(recState.metering));
+  }, [mode, phase, recState.metering]);
 
   const releaseMic = useCallback(async () => {
-    await withRecorder(async () => {
-      await stopRecordingSafely(recorderRef.current);
-      await delay(RECORDER_SETTLE_MS);
-    });
+    await stopRecordingSafely(recorderRef.current);
     try {
       await setAudioModeAsync({
         allowsRecording: false,
@@ -141,267 +112,336 @@ export function useZennyCall() {
     } catch {
       // Best-effort teardown.
     }
-  }, [withRecorder]);
+  }, []);
 
-  const pumpClips = useCallback(async () => {
-    while (active.current) {
+  const teardownDuplex = useCallback(async () => {
+    duplexRef.current = false;
+    stopPcmPlayback();
+    stopSpeaking();
+    const stopMic = stopMicRef.current;
+    stopMicRef.current = null;
+    if (stopMic) {
       try {
-        const uri = await withRecorder(async () => {
-          const rec = recorderRef.current;
-          await stopRecordingSafely(rec);
-          await delay(RECORDER_SETTLE_MS);
-          await rec.prepareToRecordAsync();
-          if (!active.current) return null;
-          // Use one explicit stop per clip. Combining forDuration with a
-          // manual stop races expo-audio's native auto-stop callback.
-          rec.record();
-          const deadline = Date.now() + CLIP_MS;
-          while (active.current && Date.now() < deadline) {
-            try {
-              const status = rec.getStatus();
-              if (typeof status.metering === 'number') publishLevel(normalizeLevel(status.metering));
-            } catch {
-              break;
-            }
-            await delay(POLL_MS);
-          }
-          await stopRecordingSafely(rec);
-          await delay(RECORDER_SETTLE_MS);
-          return rec.uri;
-        });
-        lastLevel.current = 0;
-        setLevel(0);
-        if (uri && active.current) {
-          const clip = await readClip(uri);
-          if (clip) sendJson({ type: 'audio', mime: clip.mime, data: clip.data });
-        }
+        await stopMic();
       } catch {
-        await delay(80);
+        // Mic already closed.
       }
     }
-  }, [publishLevel, sendJson, withRecorder]);
-
-  const handleSocketMessage = useCallback(
-    (raw: string) => {
-      let message: Record<string, unknown>;
+    const leaveLivekit = leaveLivekitRef.current;
+    leaveLivekitRef.current = null;
+    if (leaveLivekit) {
       try {
-        message = JSON.parse(raw) as Record<string, unknown>;
+        await leaveLivekit();
       } catch {
-        return;
+        // Room already closed.
       }
-      const kind = message.type;
-      if (kind === 'partial' && typeof message.text === 'string') {
-        setPartial(message.text);
-        setPending(true);
-      } else if (kind === 'final' && typeof message.text === 'string') {
-        setPartial(message.text);
-        setPending(true);
-      } else if (kind === 'status') {
-        const next = message.phase;
-        if (next === 'speaking') updatePhase('speaking');
-        else if (next === 'listening' || next === 'thinking') {
-          if (next === 'thinking') freshReply.current = true;
-          if (next === 'listening') setPending(false);
-          else setPending(true);
-          if (phaseRef.current !== 'connecting') updatePhase('live');
-        }
-      } else if (kind === 'speak' && typeof message.text === 'string') {
-        if (freshReply.current) {
-          stopSpeaking();
-          freshReply.current = false;
-        }
-        updatePhase('speaking');
-        speakChunk(message.text, 'en-IN');
-      } else if (kind === 'reply' && typeof message.spokenText === 'string') {
-        const turn = message as unknown as ZennyVoiceTurn;
-        setTurns((previous) => [...previous, turn]);
-        setPartial('');
-        setPending(false);
-      } else if (kind === 'error' && typeof message.message === 'string') {
-        setError(message.message);
-      }
-    },
-    [updatePhase]
-  );
-
-  const hangUpSocket = useCallback(() => {
-    sendJson({ type: 'hangup' });
+    }
     const socket = socketRef.current;
     socketRef.current = null;
-    try {
-      socket?.close();
-    } catch {
-      // Already closed.
+    if (socket && socket.readyState <= WebSocket.OPEN) {
+      try {
+        socket.send(JSON.stringify({ type: 'hangup' }));
+        socket.close();
+      } catch {
+        // Socket already gone.
+      }
     }
-  }, [sendJson]);
+    await releaseMic();
+    resetLevels();
+  }, [releaseMic, resetLevels]);
 
-  const runLive = useCallback(async () => {
-    const session = await createZennyLiveSession(tripId);
-    const socket = new WebSocket(zennyLiveSocketUrl(session));
+  const startLivekit = useCallback(async () => {
+    setError(null);
+    updatePhase('connecting');
+    stopSpeaking();
+    stopPcmPlayback();
+    const permission = await requestRecordingPermissionsAsync();
+    if (!permission.granted) throw new Error('Microphone permission is needed to talk to Zenny.');
+    await setAudioModeAsync(CALL_AUDIO_MODE);
+    const sessionId = await getVoiceSessionId();
+    const session = await createZennyLivekitToken(sessionId);
+    const leave = await connectLivekitRoom(session.url, session.token);
+    leaveLivekitRef.current = leave;
+    duplexRef.current = true;
+    modeRef.current = 'duplex';
+    setMode('duplex');
+    startedAt.current = Date.now();
+    updatePhase('live');
+  }, [updatePhase]);
+
+  const startDuplex = useCallback(async () => {
+    setError(null);
+    updatePhase('connecting');
+    stopSpeaking();
+    stopPcmPlayback();
+    const permission = await requestRecordingPermissionsAsync();
+    if (!permission.granted) throw new Error('Microphone permission is needed to talk to Zenny.');
+    await setAudioModeAsync(CALL_AUDIO_MODE);
+    const session = await createZennyAgentSession(tripId);
+    const socket = new WebSocket(zennyAgentSocketUrl(session));
+    socket.binaryType = 'arraybuffer';
     socketRef.current = socket;
+    duplexRef.current = true;
+    modeRef.current = 'duplex';
+    setMode('duplex');
+
     await new Promise<void>((resolve, reject) => {
-      const fail = setTimeout(() => reject(new Error('Live voice timed out connecting')), 8000);
-      socket.onopen = () => {
-        clearTimeout(fail);
-        resolve();
+      const fail = (message: string) => {
+        reject(new Error(message));
       };
-      socket.onerror = () => {
-        clearTimeout(fail);
-        reject(new Error('Live voice could not connect'));
+      socket.onopen = () => resolve();
+      socket.onerror = () => fail('Could not reach Zenny. Check you are on the same network as the API.');
+      socket.onclose = (event) => {
+        if (phaseRef.current === 'connecting') fail(`Zenny hung up (${event.code}).`);
       };
+      setTimeout(() => {
+        if (socket.readyState !== WebSocket.OPEN) fail('Zenny took too long to answer.');
+      }, 12000);
     });
+
     socket.onmessage = (event) => {
-      if (typeof event.data === 'string') handleSocketMessage(event.data);
+      if (typeof event.data !== 'string') return;
+      try {
+        const message = JSON.parse(event.data) as {
+          type?: string;
+          text?: string;
+          data?: string;
+          sampleRate?: number;
+          spokenText?: string;
+          transcript?: string;
+          items?: string[];
+          message?: string;
+          phase?: string;
+        };
+        if (message.type === 'status' && message.phase === 'speaking') updatePhase('speaking');
+        if (message.type === 'status' && message.phase === 'listening' && duplexRef.current) {
+          updatePhase('live');
+        }
+        if (message.type === 'partial' && message.text) setPartial(message.text);
+        if (message.type === 'speak' && message.text) {
+          setPartial('');
+          setTurns((previous) => [
+            ...previous,
+            {
+              sessionId: session.sessionId,
+              transcript: '',
+              spokenText: message.text || '',
+              intent: 'chat',
+              policyTier: 'no_confirmation',
+              confidence: 'verified',
+              citations: [],
+              items: [],
+              brain: 'sarvam-voice-agent',
+            },
+          ]);
+        }
+        if (message.type === 'reply' && message.spokenText) {
+          setTurns((previous) => {
+            const last = previous[previous.length - 1];
+            if (last && last.spokenText === message.spokenText) {
+              const copy = previous.slice();
+              copy[copy.length - 1] = { ...last, transcript: message.transcript || last.transcript };
+              return copy;
+            }
+            return previous;
+          });
+        }
+        if (message.type === 'audio' && message.data) {
+          enqueuePcmPlayback(decodeBase64Bytes(message.data), message.sampleRate || 16000);
+        }
+        if (message.type === 'interrupt') {
+          stopPcmPlayback();
+          updatePhase('live');
+        }
+        if (message.type === 'error' && message.message) setError(message.message);
+      } catch {
+        // Ignore a malformed frame.
+      }
     };
     socket.onclose = () => {
-      if (active.current) setError('The live call dropped. Tap to call again.');
-      active.current = false;
+      if (!duplexRef.current) return;
+      duplexRef.current = false;
+      void teardownDuplex().then(() => updatePhase('idle'));
     };
-    const ping = setInterval(() => sendJson({ type: 'ping' }), 20000);
+
+    const stopMic = await startPcmMic({
+      onFrame: (pcm, nextLevel) => {
+        setLevel(nextLevel);
+        if (socket.readyState !== WebSocket.OPEN) return;
+        try {
+          socket.send(pcmToArrayBuffer(pcm));
+        } catch {
+          // Drop a frame rather than killing the call.
+        }
+      },
+      onError: (message) => setError(message),
+    });
+    stopMicRef.current = stopMic;
+    startedAt.current = Date.now();
     updatePhase('live');
-    try {
-      await pumpClips();
-    } finally {
-      clearInterval(ping);
-    }
-  }, [handleSocketMessage, pumpClips, sendJson, tripId, updatePhase]);
+  }, [teardownDuplex, tripId, updatePhase]);
 
-  const runFallback = useCallback(async () => {
-    // No paid STT key: keep the companion usable via the old turn upload.
-    while (active.current) {
-      const capture = await withRecorder(async () => {
-        const rec = recorderRef.current;
-        await stopRecordingSafely(rec);
-        await delay(RECORDER_SETTLE_MS);
-        await rec.prepareToRecordAsync();
-        if (!active.current) return { heard: false, uri: null };
-        rec.record();
-        updatePhase('live');
-        const started = Date.now();
-        let heard = false;
-        let lastVoice = started;
-        while (active.current) {
-          await delay(80);
-          let metering: number | undefined;
-          try {
-            metering = rec.getStatus().metering;
-          } catch {
-            break;
-          }
-          if (typeof metering === 'number') {
-            publishLevel(normalizeLevel(metering));
-            if (metering > -30) {
-              heard = true;
-              lastVoice = Date.now();
-            }
-          }
-          if (heard && Date.now() - lastVoice > 700) break;
-          if (!heard && Date.now() - started > 12000) break;
-          if (Date.now() - started > 15000) break;
-        }
-        await stopRecordingSafely(rec);
-        await delay(RECORDER_SETTLE_MS);
-        return { heard, uri: rec.uri };
-      });
-      if (!active.current || !capture.heard || !capture.uri) continue;
-      setPending(true);
-      try {
-        const turn = await sendZennyVoiceTurn(capture.uri, tripId);
-        if (!active.current) break;
-        setTurns((previous) => [...previous, turn]);
-        updatePhase('speaking');
-        speakChunk(turn.spokenText, 'en-IN');
-      } catch (caught) {
-        setError(caught instanceof Error ? caught.message : 'Zenny did not catch that.');
-      } finally {
-        setPending(false);
-      }
-    }
-  }, [publishLevel, tripId, updatePhase, withRecorder]);
-
-  const runLoop = useCallback(async () => {
-    if (looping.current) return;
-    looping.current = true;
-    try {
-      await openMic();
-      if (!active.current) return;
-      try {
-        await runLive();
-      } catch (caught) {
-        const message = caught instanceof Error ? caught.message : 'Live voice is unavailable';
-        if (message.includes('503') || message.includes('Live voice is not configured')) {
-          setError('Live STT is not configured yet — using the slower local fallback. Add SARVAM_API_KEY on the API.');
-        }
-        if (active.current) await runFallback();
-      }
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'The call with Zenny dropped.');
-    } finally {
-      active.current = false;
-      looping.current = false;
-      hangUpSocket();
-      stopSpeaking();
-      await releaseMic();
-      lastLevel.current = 0;
-      setLevel(0);
-      setPending(false);
-      setPartial('');
-      updatePhase('idle');
-    }
-  }, [hangUpSocket, openMic, releaseMic, runFallback, runLive, updatePhase]);
-
-  const startCall = useCallback(async () => {
-    if (active.current || looping.current) return;
+  const startListening = useCallback(async () => {
     setError(null);
-    setTurns([]);
-    setPartial('');
-    setPending(false);
     updatePhase('connecting');
-    try {
-      const permission = await requestRecordingPermissionsAsync();
-      if (!permission.granted) throw new Error('Microphone permission is needed to call Zenny.');
-    } catch (caught) {
+    stopSpeaking();
+    const permission = await requestRecordingPermissionsAsync();
+    if (!permission.granted) throw new Error('Microphone permission is needed to talk to Zenny.');
+    await setAudioModeAsync(CALL_AUDIO_MODE);
+    const rec = recorderRef.current;
+    await stopRecordingSafely(rec);
+    await delay(60);
+    await rec.prepareToRecordAsync();
+    rec.record();
+    startedAt.current = Date.now();
+    setPending(false);
+    setPartial('');
+    modeRef.current = 'tap';
+    setMode('tap');
+    updatePhase('live');
+  }, [updatePhase]);
+
+  const finishAndReply = useCallback(async () => {
+    const rec = recorderRef.current;
+    const talkedMs = Date.now() - startedAt.current;
+    updatePhase('connecting');
+    setPending(true);
+    await stopRecordingSafely(rec);
+    await delay(80);
+    const uri = rec.uri;
+    if (talkedMs < MIN_TALK_MS || !uri) {
+      await releaseMic();
+      resetLevels();
       updatePhase('idle');
-      setError(caught instanceof Error ? caught.message : 'Unable to open the microphone.');
+      setError('Tap Zenny, ask your question out loud, then tap again to send.');
       return;
     }
-    active.current = true;
-    void runLoop();
-  }, [runLoop, updatePhase]);
+    try {
+      const turn = await sendZennyVoiceTurn(uri, tripId);
+      setTurns((previous) => [...previous, turn]);
+      setPartial(turn.transcript);
+      updatePhase('speaking');
+      setPending(false);
+      await speakAsync(turn.spokenText, 'en-IN');
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : 'Zenny could not hear that.';
+      setError(message);
+    } finally {
+      await releaseMic();
+      resetLevels();
+      if (phaseRef.current !== 'idle') updatePhase('idle');
+    }
+  }, [releaseMic, resetLevels, tripId, updatePhase]);
+
+  const startCall = useCallback(async () => {
+    if (busy.current) return;
+    busy.current = true;
+    try {
+      if (livekitReady && livekitNativeAvailable()) {
+        await startLivekit();
+        return;
+      }
+      if (agentReady && pcmStreamingSupported()) {
+        await startDuplex();
+        return;
+      }
+      await startListening();
+    } catch (caught) {
+      await teardownDuplex();
+      updatePhase('idle');
+      const raw = caught instanceof Error ? caught.message : 'Unable to open the microphone.';
+      if (livekitReady) {
+        setError(`${raw} Falling back to tap-to-talk.`);
+        try {
+          await startListening();
+          return;
+        } catch (fallback) {
+          setError(fallback instanceof Error ? fallback.message : raw);
+          return;
+        }
+      }
+      if (agentReady && /PCM live mic is not in this native build/i.test(raw)) {
+        setError(null);
+        try {
+          await startListening();
+          return;
+        } catch (fallback) {
+          setError(fallback instanceof Error ? fallback.message : raw);
+          return;
+        }
+      }
+      if (agentReady && pcmStreamingSupported()) {
+        setError(`${raw} Falling back to tap-to-talk.`);
+        try {
+          await startListening();
+          return;
+        } catch {
+          setError(raw);
+        }
+        return;
+      }
+      setError(raw);
+    } finally {
+      busy.current = false;
+    }
+  }, [agentReady, livekitReady, startDuplex, startListening, startLivekit, teardownDuplex, updatePhase]);
+
+  const toggleTalk = useCallback(async () => {
+    if (busy.current) return;
+    if (modeRef.current === 'duplex' && duplexRef.current) {
+      if (phaseRef.current === 'speaking') {
+        stopPcmPlayback();
+        stopSpeaking();
+        updatePhase('live');
+      }
+      return;
+    }
+    busy.current = true;
+    try {
+      const current = phaseRef.current;
+      if (current === 'connecting') return;
+      if (current === 'live') {
+        await finishAndReply();
+        return;
+      }
+      if (current === 'speaking') {
+        stopSpeaking();
+        await startListening();
+        return;
+      }
+      await startListening();
+    } catch (caught) {
+      await releaseMic();
+      resetLevels();
+      updatePhase('idle');
+      setError(caught instanceof Error ? caught.message : 'Unable to open the microphone.');
+    } finally {
+      busy.current = false;
+    }
+  }, [finishAndReply, releaseMic, resetLevels, startListening, updatePhase]);
 
   const endCall = useCallback(() => {
-    active.current = false;
-    hangUpSocket();
-    stopSpeaking();
-  }, [hangUpSocket]);
-
-  const nudge = useCallback(() => {
-    if (!active.current) return;
-    stopSpeaking();
-    sendJson({ type: 'barge_in' });
-    updatePhase('live');
-  }, [sendJson, updatePhase]);
-
-  useEffect(
-    () => () => {
-      active.current = false;
-      hangUpSocket();
-      stopSpeaking();
-    },
-    [hangUpSocket]
-  );
+    busy.current = false;
+    void teardownDuplex();
+    updatePhase('idle');
+  }, [teardownDuplex, updatePhase]);
 
   return {
     phase,
+    mode,
+    duplex: mode === 'duplex' && phase !== 'idle',
+    agentReady,
     turns,
     error,
     level,
     pending,
     partial,
     inCall: phase !== 'idle',
+    canDuplex: (livekitReady && livekitNativeAvailable()) || (agentReady && pcmStreamingSupported()),
     startCall,
     endCall,
-    nudge,
+    nudge: toggleTalk,
+    toggleTalk,
     clearError: useCallback(() => setError(null), []),
     pushTurn: useCallback((turn: ZennyVoiceTurn) => setTurns((prev) => [...prev, turn]), []),
     setError,

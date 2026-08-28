@@ -1,5 +1,5 @@
-import { useMutation } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   ScrollView,
@@ -10,11 +10,13 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BudgetLevel, CompareResult, recordCompareOutcome, searchCompare, searchStays, StayResult } from '../../lib/compare';
 import { HandoffStrip } from '../../components/booking/BookingHandoffButton';
+import { prefillFromSearchParams, prefillFromTrip, prefillSearchParams } from '../../lib/trip-prefill';
+import { getTrip } from '../../lib/trips';
 import { colors, radii, shadows, spacing, typography } from '../../lib/theme';
 import { useStore } from '../../store/useStore';
 
@@ -26,6 +28,24 @@ const BUDGETS: Array<{ id: BudgetLevel; label: string; icon: string }> = [
   { id: 'mixed', label: 'Mixed', icon: 'swap-horizontal-outline' },
 ];
 const STAY_STYLES = ['balanced', 'social', 'quiet', 'remote_work', 'trek', 'solo'];
+const ROUTE_PRESETS = [
+  { origin: 'Delhi', destination: 'Agra', label: 'Delhi → Agra' },
+  { origin: 'Agra', destination: 'Jaipur', label: 'Agra → Jaipur' },
+  { origin: 'Jaipur', destination: 'Delhi', label: 'Jaipur → Delhi' },
+];
+
+function formatLocalDate(date: Date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function addDays(base: Date, days: number) {
+  const next = new Date(base);
+  next.setDate(next.getDate() + days);
+  return next;
+}
 
 function timeLabel(dateTime: string) {
   return dateTime.length >= 16 ? dateTime.slice(11, 16) : dateTime;
@@ -57,7 +77,14 @@ function getModeIcon(mode: string) {
   }
 }
 
-function ResultCard({ result }: { result: CompareResult }) {
+function ResultCard({
+  result,
+  bookingParams,
+}: {
+  result: CompareResult;
+  bookingParams: Record<string, string>;
+}) {
+  const router = useRouter();
   const outcomeMutation = useMutation({
     mutationFn: () => recordCompareOutcome(result.recommendationId, 'opened'),
   });
@@ -66,11 +93,7 @@ function ResultCard({ result }: { result: CompareResult }) {
   const reliabilityPct = Math.round(result.reliabilityScore * 100);
 
   return (
-    <TouchableOpacity
-      style={[styles.resultCard, isRecommended && styles.recommendedCard]}
-      onPress={() => outcomeMutation.mutate()}
-      activeOpacity={0.88}
-    >
+    <View style={[styles.resultCard, isRecommended && styles.recommendedCard]}>
       <View style={styles.resultTopline}>
         <View style={styles.resultBadgeRow}>
           {result.badges.map((badge) => {
@@ -96,6 +119,7 @@ function ResultCard({ result }: { result: CompareResult }) {
       </View>
 
       <Text style={styles.provider}>{result.provider}</Text>
+      <Text style={styles.demoEstimate}>Demo corridor estimate · confirm live before booking</Text>
 
       <View style={styles.routeRow}>
         <View style={styles.routeStation}>
@@ -131,7 +155,7 @@ function ResultCard({ result }: { result: CompareResult }) {
 
         <View style={styles.reliabilityBadge}>
           <Ionicons name="shield-checkmark" size={13} color={colors.sage} />
-          <Text style={styles.reliabilityText}>{reliabilityPct}% reliability</Text>
+          <Text style={styles.reliabilityText}>{reliabilityPct}% est. reliability</Text>
         </View>
       </View>
 
@@ -139,40 +163,128 @@ function ResultCard({ result }: { result: CompareResult }) {
         <Text style={styles.explanationKicker}>WHY ZENNY CHOSE THIS</Text>
         <Text style={styles.explanation}>{result.explanation}</Text>
       </View>
-    </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.bookCta}
+        onPress={() => {
+          outcomeMutation.mutate();
+          router.push({ pathname: '/services/booking', params: bookingParams });
+        }}
+        activeOpacity={0.85}
+      >
+        <Text style={styles.bookCtaText}>Book live on provider sites</Text>
+        <Ionicons name="open-outline" size={14} color={colors.white} />
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function FareGroup({
+  title,
+  results,
+  bookingParams,
+}: {
+  title: string;
+  results: CompareResult[];
+  bookingParams: Record<string, string>;
+}) {
+  if (!results.length) return null;
+  return (
+    <View style={styles.stayGroup}>
+      <View style={styles.stayGroupHeader}>
+        <Text style={styles.stayGroupTitle}>{title}</Text>
+        <Text style={styles.resultCount}>
+          {results.length} option{results.length === 1 ? '' : 's'}
+        </Text>
+      </View>
+      {results.map((result) => (
+        <ResultCard key={result.recommendationId} result={result} bookingParams={bookingParams} />
+      ))}
+    </View>
   );
 }
 
 function StayCard({ result }: { result: StayResult }) {
+  const isRecommended = result.badges.includes('RECOMMENDED');
   return (
-    <View style={styles.stayCard}>
+    <View style={[styles.stayCard, isRecommended && styles.recommendedCard]}>
       <View style={styles.stayTopline}>
         <View style={styles.resultBadgeRow}>
-          {result.badges.map((badge) => <Text key={badge} style={styles.stayBadge}>{badge}</Text>)}
+          {result.badges.map((badge) => {
+            const isRec = badge === 'RECOMMENDED';
+            return (
+              <View
+                key={badge}
+                style={[styles.badge, isRec ? styles.recommendedBadge : styles.neutralBadge]}
+              >
+                {isRec ? <Text style={styles.badgeStar}>✦</Text> : null}
+                <Text style={isRec ? styles.recommendedBadgeText : styles.neutralBadgeText}>
+                  {badge}
+                </Text>
+              </View>
+            );
+          })}
         </View>
-        <Text style={styles.stayType}>{result.stayType}</Text>
+        <View style={styles.stayTypePill}>
+          <Ionicons
+            name={result.stayType.toLowerCase() === 'hostel' ? 'people-outline' : 'bed-outline'}
+            size={12}
+            color={colors.ink}
+          />
+          <Text style={styles.stayType}>{result.stayType}</Text>
+        </View>
       </View>
       <Text style={styles.provider}>{result.provider}</Text>
+      <Text style={styles.demoEstimate}>Typical corridor estimate · confirm live before booking</Text>
       <View style={styles.stayScoreRow}>
         <Text style={styles.stayScore}>Stay Score {Math.round(result.score * 10)}/10</Text>
         <Text style={styles.reliabilityText}>{result.rating}/5 rating</Text>
       </View>
-      <Text style={styles.explanation}>{result.explanation}</Text>
       <View style={styles.stayPriceRow}>
-        <Text style={styles.price}>₹{result.pricePerNight}/night</Text>
-        <Text style={styles.fee}>₹{result.totalPrice} total · {result.distanceToCenterKm} km to center</Text>
-      </View>
-      <View style={styles.breakdown}>
-        <Text style={styles.breakdownTitle}>WHY THIS FITS</Text>
-        {result.scoreBreakdown.slice(0, 5).map((item) => (
-          <View key={item.key} style={styles.breakdownRow}>
-            <Text style={styles.breakdownLabel}>{item.label}</Text>
-            <Text style={styles.breakdownValue}>{item.score}/100 · {item.weight}% weight</Text>
+        <View>
+          <View style={styles.priceRow}>
+            <Text style={styles.price}>₹{result.pricePerNight}</Text>
+            <Text style={styles.pricePer}>/night</Text>
           </View>
-        ))}
+          <Text style={styles.fee}>
+            ₹{result.totalPrice} total · {result.distanceToCenterKm} km to center
+          </Text>
+        </View>
       </View>
-      {result.contextSignals.map((signal) => <Text key={signal} style={styles.contextSignal}>✦ {signal}</Text>)}
-      <Text style={styles.disclaimer}>Typical estimate. Book live on MakeMyTrip, Goibibo, Booking.com, or Airbnb below.</Text>
+      <View style={styles.explanationBox}>
+        <Text style={styles.explanationKicker}>WHY THIS FITS</Text>
+        <Text style={styles.explanation}>{result.explanation}</Text>
+      </View>
+      {result.scoreBreakdown.slice(0, 4).map((item) => (
+        <View key={item.key} style={styles.breakdownRow}>
+          <Text style={styles.breakdownLabel}>{item.label}</Text>
+          <Text style={styles.breakdownValue}>
+            {item.score}/100 · {item.weight}%
+          </Text>
+        </View>
+      ))}
+      {result.contextSignals.map((signal) => (
+        <Text key={signal} style={styles.contextSignal}>
+          ✦ {signal}
+        </Text>
+      ))}
+    </View>
+  );
+}
+
+function StayGroup({ title, results }: { title: string; results: StayResult[] }) {
+  if (!results.length) return null;
+  return (
+    <View style={styles.stayGroup}>
+      <View style={styles.stayGroupHeader}>
+        <Text style={styles.stayGroupTitle}>{title}</Text>
+        <Text style={styles.resultCount}>
+          {results.length} stay{results.length === 1 ? '' : 's'}
+        </Text>
+      </View>
+      {results.map((result) => (
+        <StayCard key={result.recommendationId} result={result} />
+      ))}
     </View>
   );
 }
@@ -180,15 +292,69 @@ function StayCard({ result }: { result: StayResult }) {
 export default function CompareScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{
+    origin?: string | string[];
+    destination?: string | string[];
+    stayCity?: string | string[];
+    departureDate?: string | string[];
+    checkIn?: string | string[];
+    checkOut?: string | string[];
+    budgetLevel?: string | string[];
+    prefill?: string | string[];
+    source?: string | string[];
+  }>();
   const user = useStore((s) => s.user);
+  const setUser = useStore((s) => s.setUser);
+  const activeTripId = useStore((s) => s.activeTripId);
+  const seededRef = useRef(false);
+  const hopKeyRef = useRef<string | null>(null);
   const [origin, setOrigin] = useState('Delhi');
   const [destination, setDestination] = useState('Agra');
-  const [departureDate, setDepartureDate] = useState('2026-10-10');
+  const [departureDate, setDepartureDate] = useState(formatLocalDate(addDays(new Date(), 7)));
   const [budgetLevel, setBudgetLevel] = useState<BudgetLevel>('backpacker');
   const [stayCity, setStayCity] = useState('Jaipur');
-  const [checkIn, setCheckIn] = useState('2026-10-10');
-  const [checkOut, setCheckOut] = useState('2026-10-12');
+  const [checkIn, setCheckIn] = useState(formatLocalDate(addDays(new Date(), 7)));
+  const [checkOut, setCheckOut] = useState(formatLocalDate(addDays(new Date(), 9)));
   const [stayStyle, setStayStyle] = useState('balanced');
+  const [tripPrefillLabel, setTripPrefillLabel] = useState<string | null>(null);
+  const [prefillSource, setPrefillSource] = useState<'trip' | 'hop' | 'stay' | null>(null);
+
+  const tripQuery = useQuery({
+    queryKey: ['trip', activeTripId],
+    queryFn: () => getTrip(activeTripId as string),
+    enabled: Boolean(activeTripId) && user?.id !== 'guest',
+  });
+
+  function applySeed(seed: NonNullable<ReturnType<typeof prefillFromTrip>>) {
+    seededRef.current = true;
+    if (seed.source !== 'stay') {
+      setOrigin(seed.origin);
+      setDestination(seed.destination);
+      setDepartureDate(seed.departureDate);
+    }
+    setStayCity(seed.stayCity);
+    setCheckIn(seed.checkIn);
+    setCheckOut(seed.checkOut);
+    setBudgetLevel(seed.budgetLevel);
+    setTripPrefillLabel(seed.label);
+    setPrefillSource(seed.source);
+  }
+
+  useEffect(() => {
+    const seed = prefillFromSearchParams(params);
+    if (!seed) return;
+    const key = `${seed.source}:${seed.origin}:${seed.destination}:${seed.stayCity}:${seed.departureDate}`;
+    if (hopKeyRef.current === key) return;
+    hopKeyRef.current = key;
+    applySeed(seed);
+  }, [params]);
+
+  useEffect(() => {
+    if (seededRef.current || !tripQuery.data) return;
+    const seed = prefillFromTrip(tripQuery.data);
+    if (!seed) return;
+    applySeed(seed);
+  }, [tripQuery.data]);
 
   const searchMutation = useMutation({
     mutationFn: () => searchCompare({ origin, destination, departureDate, budgetLevel }),
@@ -197,11 +363,30 @@ export default function CompareScreen() {
     mutationFn: () => searchStays({ city: stayCity, checkIn, checkOut, budgetLevel, travelerStyle: stayStyle, guests: 1 }),
   });
 
+  function clearPrefillBanner() {
+    setTripPrefillLabel(null);
+    setPrefillSource(null);
+  }
+
   function swapCities() {
     const temp = origin;
     setOrigin(destination);
     setDestination(temp);
+    clearPrefillBanner();
   }
+
+  const bookingParams = prefillSearchParams({
+    origin,
+    destination,
+    stayCity,
+    departureDate,
+    checkIn,
+    checkOut,
+    budgetLevel,
+    label: tripPrefillLabel ?? `${origin} → ${destination}`,
+    fromTrip: true,
+    source: prefillSource ?? 'trip',
+  });
 
   const isGuest = user?.id === 'guest';
   if (isGuest) {
@@ -218,10 +403,18 @@ export default function CompareScreen() {
         </Text>
         <TouchableOpacity
           style={styles.guestButton}
-          onPress={() => router.push('/(tabs)/profile')}
+          onPress={() => {
+            setUser(null);
+            router.replace('/(auth)/login');
+          }}
           activeOpacity={0.85}
         >
           <Text style={styles.guestButtonText}>Sign In to Continue</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => router.push('/(tabs)/explore')} style={{ marginTop: 12 }}>
+          <Text style={{ color: colors.inkMuted, fontWeight: '600', textAlign: 'center' }}>
+            Keep exploring as guest
+          </Text>
         </TouchableOpacity>
       </View>
     );
@@ -248,7 +441,55 @@ export default function CompareScreen() {
           </Text>
         </View>
 
+        {activeTripId && tripQuery.isLoading ? (
+          <View style={styles.prefillBanner}>
+            <ActivityIndicator color={colors.primary} />
+            <Text style={styles.prefillText}>Loading your trip to prefill cities…</Text>
+          </View>
+        ) : null}
+
+        {tripPrefillLabel ? (
+          <View style={styles.prefillBanner}>
+            <Ionicons name="map-outline" size={14} color={colors.primary} />
+            <Text style={styles.prefillText}>
+              {prefillSource === 'hop'
+                ? `This hop · ${tripPrefillLabel}`
+                : prefillSource === 'stay'
+                  ? `This city · ${tripPrefillLabel}`
+                  : `Prefilling from your trip · ${tripPrefillLabel}`}
+            </Text>
+          </View>
+        ) : null}
+
         <View style={styles.formCard}>
+          <Text style={styles.fieldLabel}>Quick corridor routes</Text>
+          <View style={styles.cityChips}>
+            {ROUTE_PRESETS.map((preset) => (
+              <TouchableOpacity
+                key={preset.label}
+                style={[
+                  styles.cityChip,
+                  origin === preset.origin && destination === preset.destination && styles.cityChipActive,
+                ]}
+                onPress={() => {
+                  setOrigin(preset.origin);
+                  setDestination(preset.destination);
+                  clearPrefillBanner();
+                }}
+              >
+                <Text
+                  style={
+                    origin === preset.origin && destination === preset.destination
+                      ? styles.cityTextActive
+                      : styles.cityText
+                  }
+                >
+                  {preset.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
           <View style={styles.routePickersRow}>
             <View style={styles.routeSide}>
               <Text style={styles.fieldLabel}>Origin</Text>
@@ -257,7 +498,10 @@ export default function CompareScreen() {
                   <TouchableOpacity
                     key={city}
                     style={[styles.cityChip, origin === city && styles.cityChipActive]}
-                    onPress={() => setOrigin(city)}
+                    onPress={() => {
+                      setOrigin(city);
+                      clearPrefillBanner();
+                    }}
                   >
                     <Text style={origin === city ? styles.cityTextActive : styles.cityText}>{city}</Text>
                   </TouchableOpacity>
@@ -283,7 +527,10 @@ export default function CompareScreen() {
                   <TouchableOpacity
                     key={city}
                     style={[styles.cityChip, destination === city && styles.cityChipActive]}
-                    onPress={() => setDestination(city)}
+                    onPress={() => {
+                      setDestination(city);
+                      clearPrefillBanner();
+                    }}
                   >
                     <Text style={destination === city ? styles.cityTextActive : styles.cityText}>{city}</Text>
                   </TouchableOpacity>
@@ -301,6 +548,21 @@ export default function CompareScreen() {
 
           <View style={styles.fieldSection}>
             <Text style={styles.fieldLabel}>Departure date</Text>
+            <View style={styles.cityChips}>
+              {[
+                { label: 'Tomorrow', days: 1 },
+                { label: 'In 3 days', days: 3 },
+                { label: 'Next week', days: 7 },
+              ].map((chip) => (
+                <TouchableOpacity
+                  key={chip.label}
+                  style={styles.cityChip}
+                  onPress={() => setDepartureDate(formatLocalDate(addDays(new Date(), chip.days)))}
+                >
+                  <Text style={styles.cityText}>{chip.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
             <View style={styles.inputWrapper}>
               <Ionicons name="calendar-outline" size={16} color={colors.inkMuted} style={styles.inputIcon} />
               <TextInput
@@ -309,6 +571,7 @@ export default function CompareScreen() {
                 onChangeText={setDepartureDate}
                 placeholder="YYYY-MM-DD"
                 placeholderTextColor={colors.inkSubtle}
+                autoCapitalize="none"
               />
             </View>
           </View>
@@ -373,6 +636,16 @@ export default function CompareScreen() {
           </TouchableOpacity>
         </View>
 
+        {!searchMutation.data && !searchMutation.isPending ? (
+          <View style={styles.empty}>
+            <Ionicons name="map-outline" size={32} color={colors.inkSubtle} />
+            <Text style={styles.emptyText}>
+              Try Delhi → Agra for the classic Golden Triangle hop. Results are demo estimates — book live on IRCTC or
+              RedBus below after you compare.
+            </Text>
+          </View>
+        ) : null}
+
         {searchMutation.data ? (
           <View style={styles.resultsContainer}>
             <View style={styles.resultHeader}>
@@ -385,52 +658,248 @@ export default function CompareScreen() {
             <View style={styles.notice}>
               <Ionicons name="information-circle-outline" size={16} color={colors.primary} />
               <View style={{ flex: 1 }}>
-                <Text style={styles.noticeTitle}>LIVE BOOKING ON PROVIDER SITES</Text>
+                <Text style={styles.noticeTitle}>TYPICAL CORRIDOR RANKING</Text>
                 <Text style={styles.noticeBody}>{searchMutation.data.message}</Text>
               </View>
             </View>
 
-            <HandoffStrip title="TRAINS" handoffs={searchMutation.data.handoffs ?? []} category="train" />
-            <HandoffStrip title="BUSES" handoffs={searchMutation.data.handoffs ?? []} category="bus" />
-            <HandoffStrip title="FLIGHTS" handoffs={searchMutation.data.handoffs ?? []} category="flight" />
-            <HandoffStrip title="CABS" handoffs={searchMutation.data.handoffs ?? []} category="cab" />
-
-            {searchMutation.data.results.map((result) => (
-              <ResultCard key={result.recommendationId} result={result} />
-            ))}
-
-            {!searchMutation.data.results.length ? (
+            {searchMutation.data.results.length ? (
+              <>
+                <FareGroup
+                  title="Recommended"
+                  results={searchMutation.data.results.filter((row) => row.badges.includes('RECOMMENDED'))}
+                  bookingParams={bookingParams}
+                />
+                <FareGroup
+                  title="Other corridor options"
+                  results={searchMutation.data.results.filter((row) => !row.badges.includes('RECOMMENDED'))}
+                  bookingParams={bookingParams}
+                />
+              </>
+            ) : (
               <View style={styles.empty}>
                 <Ionicons name="train-outline" size={32} color={colors.inkSubtle} />
                 <Text style={styles.emptyText}>No verified options for this route yet.</Text>
               </View>
-            ) : null}
+            )}
+
+            <View style={styles.resultHeader}>
+              <Text style={styles.resultTitle}>Book live on provider sites</Text>
+              <Text style={styles.resultCount}>After ranked fares</Text>
+            </View>
+            <Text style={styles.subtitle}>
+              Provider tiles sit below ranked fares so they do not compete with price rows. You pay them, not Zentrip.
+            </Text>
+            <HandoffStrip
+              title="TRAINS"
+              subtitle="Official sites, not Zentrip bookings."
+              handoffs={searchMutation.data.handoffs ?? []}
+              category="train"
+            />
+            <HandoffStrip
+              title="BUSES"
+              subtitle="Official sites, not Zentrip bookings."
+              handoffs={searchMutation.data.handoffs ?? []}
+              category="bus"
+            />
+            <HandoffStrip
+              title="FLIGHTS"
+              subtitle="Official sites, not Zentrip bookings."
+              handoffs={searchMutation.data.handoffs ?? []}
+              category="flight"
+            />
+            <HandoffStrip
+              title="CABS"
+              subtitle="Official sites, not Zentrip bookings."
+              handoffs={searchMutation.data.handoffs ?? []}
+              category="cab"
+            />
           </View>
         ) : null}
 
         <View style={styles.staySection}>
           <View style={styles.resultHeader}>
-            <Text style={styles.resultTitle}>Find a stay</Text>
-            <Text style={styles.resultCount}>Feature 09</Text>
+            <Text style={styles.resultTitle}>Stays · hostels & hotels</Text>
+            <Text style={styles.resultCount}>Separate from fares</Text>
           </View>
-          <Text style={styles.subtitle}>Social atmosphere, quietness, work fit, trek access, and solo fit—explained as a Stay Score.</Text>
-          <View style={styles.stayCityRow}>
-            {CITIES.map((city) => <TouchableOpacity key={city} style={[styles.cityChip, stayCity === city && styles.cityChipActive]} onPress={() => setStayCity(city)}><Text style={stayCity === city ? styles.cityTextActive : styles.cityText}>{city}</Text></TouchableOpacity>)}
+          <Text style={styles.subtitle}>
+            Ranked by Stay Score for atmosphere, quietness, work fit, trek access, and solo travel — not mixed into train rows.
+          </Text>
+
+          <View style={styles.formCard}>
+            <Text style={styles.fieldLabel}>City</Text>
+            <View style={styles.stayCityRow}>
+              {CITIES.map((city) => (
+                <TouchableOpacity
+                  key={city}
+                  style={[styles.cityChip, stayCity === city && styles.cityChipActive]}
+                  onPress={() => setStayCity(city)}
+                >
+                  <Text style={stayCity === city ? styles.cityTextActive : styles.cityText}>{city}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TextInput
+              style={styles.input}
+              value={stayCity}
+              onChangeText={setStayCity}
+              placeholder="Any Indian city"
+              placeholderTextColor={colors.inkSubtle}
+            />
+
+            <Text style={styles.fieldLabel}>Stay preference</Text>
+            <View style={styles.budgetRow}>
+              {STAY_STYLES.map((style) => (
+                <TouchableOpacity
+                  key={style}
+                  style={[styles.budgetChip, stayStyle === style && styles.budgetChipActive]}
+                  onPress={() => setStayStyle(style)}
+                >
+                  <Text style={stayStyle === style ? styles.budgetTextActive : styles.budgetText}>
+                    {style.replaceAll('_', ' ')}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={styles.fieldLabel}>Dates</Text>
+            <View style={styles.cityChips}>
+              {[
+                { label: 'Tonight · 2 nights', start: 0, nights: 2 },
+                { label: 'In 3 days', start: 3, nights: 2 },
+                { label: 'Next week', start: 7, nights: 2 },
+              ].map((chip) => (
+                <TouchableOpacity
+                  key={chip.label}
+                  style={styles.cityChip}
+                  onPress={() => {
+                    const start = addDays(new Date(), chip.start);
+                    setCheckIn(formatLocalDate(start));
+                    setCheckOut(formatLocalDate(addDays(start, chip.nights)));
+                  }}
+                >
+                  <Text style={styles.cityText}>{chip.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <View style={styles.stayDateRow}>
+              <TextInput
+                style={styles.stayDateInput}
+                value={checkIn}
+                onChangeText={setCheckIn}
+                placeholder="Check-in YYYY-MM-DD"
+                placeholderTextColor={colors.inkSubtle}
+              />
+              <TextInput
+                style={styles.stayDateInput}
+                value={checkOut}
+                onChangeText={setCheckOut}
+                placeholder="Check-out YYYY-MM-DD"
+                placeholderTextColor={colors.inkSubtle}
+              />
+            </View>
+
+            {checkOut <= checkIn ? (
+              <View style={styles.errorBanner}>
+                <Ionicons name="alert-circle" size={14} color={colors.error} />
+                <Text style={styles.errorText}>Check-out must be after check-in.</Text>
+              </View>
+            ) : null}
+
+            {stayMutation.isError ? (
+              <View style={styles.errorBanner}>
+                <Ionicons name="alert-circle" size={14} color={colors.error} />
+                <Text style={styles.errorText}>
+                  {stayMutation.error instanceof Error ? stayMutation.error.message : 'Stay search failed'}
+                </Text>
+              </View>
+            ) : null}
+
+            <TouchableOpacity
+              style={[
+                styles.staySearchButton,
+                (stayMutation.isPending || checkOut <= checkIn) && styles.searchButtonDisabled,
+              ]}
+              onPress={() => stayMutation.mutate()}
+              disabled={stayMutation.isPending || checkOut <= checkIn}
+              activeOpacity={0.85}
+            >
+              {stayMutation.isPending ? (
+                <ActivityIndicator color={colors.white} />
+              ) : (
+                <View style={styles.btnInner}>
+                  <Ionicons name="bed-outline" size={16} color={colors.white} style={{ marginRight: 6 }} />
+                  <Text style={styles.searchButtonText}>Search stays</Text>
+                </View>
+              )}
+            </TouchableOpacity>
           </View>
-          <TextInput style={styles.input} value={stayCity} onChangeText={setStayCity} placeholder="Any Indian city" placeholderTextColor={colors.inkSubtle} />
-          <Text style={styles.fieldLabel}>Stay preference</Text>
-          <View style={styles.budgetRow}>
-            {STAY_STYLES.map((style) => <TouchableOpacity key={style} style={[styles.budgetChip, stayStyle === style && styles.budgetChipActive]} onPress={() => setStayStyle(style)}><Text style={stayStyle === style ? styles.budgetTextActive : styles.budgetText}>{style.replace('_', ' ')}</Text></TouchableOpacity>)}
-          </View>
-          <View style={styles.stayDateRow}>
-            <TextInput style={styles.stayDateInput} value={checkIn} onChangeText={setCheckIn} placeholder="Check-in YYYY-MM-DD" placeholderTextColor={colors.inkSubtle} />
-            <TextInput style={styles.stayDateInput} value={checkOut} onChangeText={setCheckOut} placeholder="Check-out YYYY-MM-DD" placeholderTextColor={colors.inkSubtle} />
-          </View>
-          <TouchableOpacity style={styles.searchButton} onPress={() => stayMutation.mutate()} disabled={stayMutation.isPending} activeOpacity={0.85}>
-            {stayMutation.isPending ? <ActivityIndicator color={colors.white} /> : <Text style={styles.searchButtonText}>Search contextual stays</Text>}
-          </TouchableOpacity>
-          {stayMutation.isError ? <Text style={styles.errorText}>{stayMutation.error instanceof Error ? stayMutation.error.message : 'Stay search failed'}</Text> : null}
-          {stayMutation.data ? <View style={styles.stayResults}><View style={styles.notice}><Ionicons name="information-circle-outline" size={16} color={colors.primary} /><View style={{ flex: 1 }}><Text style={styles.noticeTitle}>LIVE STAY SITES</Text><Text style={styles.noticeBody}>{stayMutation.data.message}</Text></View></View><HandoffStrip title="HOTELS & HOSTELS" handoffs={stayMutation.data.handoffs ?? []} category="stay" />{stayMutation.data.results.map((result) => <StayCard key={result.recommendationId} result={result} />)}</View> : null}
+
+          {stayMutation.isPending && !stayMutation.data ? (
+            <View style={styles.empty}>
+              <ActivityIndicator color={colors.primary} />
+              <Text style={styles.emptyText}>Ranking hostels and hotels for {stayCity}…</Text>
+            </View>
+          ) : null}
+
+          {!stayMutation.data && !stayMutation.isPending && !stayMutation.isError ? (
+            <View style={styles.empty}>
+              <Ionicons name="bed-outline" size={32} color={colors.inkSubtle} />
+              <Text style={styles.emptyText}>
+                Search a corridor city to rank stays. Results are typical estimates — live rooms open on MakeMyTrip,
+                Goibibo, Booking.com, or Airbnb after you scan the list.
+              </Text>
+            </View>
+          ) : null}
+
+          {stayMutation.data ? (
+            <View style={styles.stayResults}>
+              <View style={styles.notice}>
+                <Ionicons name="information-circle-outline" size={16} color={colors.primary} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.noticeTitle}>TYPICAL STAY ESTIMATES</Text>
+                  <Text style={styles.noticeBody}>{stayMutation.data.message}</Text>
+                </View>
+              </View>
+
+              {!stayMutation.data.results.length ? (
+                <View style={styles.empty}>
+                  <Ionicons name="bed-outline" size={32} color={colors.inkSubtle} />
+                  <Text style={styles.emptyText}>
+                    No ranked stays for {stayCity} yet. Corridor demo coverage is Delhi, Agra, and Jaipur.
+                  </Text>
+                </View>
+              ) : (
+                <>
+                  <StayGroup
+                    title="Recommended first"
+                    results={stayMutation.data.results.filter((row) => row.badges.includes('RECOMMENDED'))}
+                  />
+                  <StayGroup
+                    title="Hostels"
+                    results={stayMutation.data.results.filter(
+                      (row) =>
+                        !row.badges.includes('RECOMMENDED') && row.stayType.toLowerCase() === 'hostel',
+                    )}
+                  />
+                  <StayGroup
+                    title="Hotels"
+                    results={stayMutation.data.results.filter(
+                      (row) =>
+                        !row.badges.includes('RECOMMENDED') && row.stayType.toLowerCase() !== 'hostel',
+                    )}
+                  />
+                </>
+              )}
+
+              <HandoffStrip
+                title="BOOK LIVE — AFTER YOU SCAN"
+                subtitle="Provider sites, not Zentrip bookings. These tiles sit below the ranked stays so they do not compete with price rows."
+                handoffs={stayMutation.data.handoffs ?? []}
+                category="stay"
+              />
+            </View>
+          ) : null}
         </View>
       </ScrollView>
     </View>
@@ -452,6 +921,21 @@ const styles = StyleSheet.create({
   header: {
     alignItems: 'flex-start',
     gap: 4,
+  },
+  prefillBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.primarySoft,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  prefillText: {
+    color: colors.primary,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '700',
+    flex: 1,
   },
   badgeRow: {
     flexDirection: 'row',
@@ -846,7 +1330,28 @@ const styles = StyleSheet.create({
     backgroundColor: colors.cardWarm,
     borderRadius: radii.md,
     padding: spacing.md,
-    gap: 2,
+    gap: 4,
+  },
+  demoEstimate: {
+    color: colors.inkSubtle,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '600',
+    marginTop: -4,
+  },
+  bookCta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: colors.primary,
+    borderRadius: radii.md,
+    paddingVertical: 12,
+    marginTop: 4,
+  },
+  bookCtaText: {
+    color: colors.white,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '800',
   },
   explanationKicker: {
     color: colors.primary,
@@ -886,8 +1391,30 @@ const styles = StyleSheet.create({
     color: colors.ink,
     fontSize: typography.fontSize.micro,
   },
+  staySearchButton: {
+    backgroundColor: colors.sage,
+    borderRadius: radii.md,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+    ...shadows.sm,
+  },
   stayResults: {
     gap: spacing.md,
+  },
+  stayGroup: {
+    gap: spacing.sm,
+  },
+  stayGroupHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'baseline',
+  },
+  stayGroupTitle: {
+    color: colors.ink,
+    fontSize: typography.fontSize.headline,
+    fontWeight: '800',
   },
   stayCard: {
     backgroundColor: colors.card,
@@ -902,18 +1429,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: spacing.sm,
   },
-  stayBadge: {
-    color: colors.primary,
-    backgroundColor: colors.sandLight,
-    borderRadius: radii.full,
+  stayTypePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: colors.cardWarm,
     paddingHorizontal: 8,
     paddingVertical: 3,
-    fontSize: 9,
-    fontWeight: '800',
+    borderRadius: radii.sm,
   },
   stayType: {
-    color: colors.inkMuted,
+    color: colors.ink,
     fontSize: typography.fontSize.micro,
     textTransform: 'capitalize',
     fontWeight: '700',
@@ -924,7 +1452,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   stayScore: {
-    color: colors.primary,
+    color: colors.sage,
     fontSize: typography.fontSize.title2,
     fontWeight: '800',
   },
@@ -933,18 +1461,6 @@ const styles = StyleSheet.create({
     borderTopColor: colors.borderLight,
     paddingTop: spacing.sm,
     gap: 2,
-  },
-  breakdown: {
-    borderTopWidth: 1,
-    borderTopColor: colors.borderLight,
-    paddingTop: spacing.sm,
-    gap: 4,
-  },
-  breakdownTitle: {
-    color: colors.inkSubtle,
-    fontSize: 9,
-    fontWeight: '800',
-    letterSpacing: 1,
   },
   breakdownRow: {
     flexDirection: 'row',
@@ -963,11 +1479,6 @@ const styles = StyleSheet.create({
     color: colors.sage,
     fontSize: typography.fontSize.micro,
     lineHeight: 16,
-  },
-  disclaimer: {
-    color: colors.error,
-    fontSize: 9,
-    fontWeight: '600',
   },
 
   empty: {

@@ -3,6 +3,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { Platform, StyleSheet, View } from 'react-native';
 import { colors, radii, typography } from '../../lib/theme';
 
+const TAB_BAR_HEIGHT = Platform.OS === 'ios' ? 88 : 68;
+const TAB_BAR_PAD_BOTTOM = Platform.OS === 'ios' ? 28 : 10;
+
 export default function TabsLayout() {
   return (
     <Tabs
@@ -11,22 +14,22 @@ export default function TabsLayout() {
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.inkSubtle,
         tabBarStyle: {
-          backgroundColor: colors.card,
-          borderTopColor: colors.border,
+          backgroundColor: colors.cardSubtle,
+          borderTopColor: colors.borderLight,
           borderTopWidth: 1,
-          height: Platform.OS === 'ios' ? 88 : 68,
+          height: TAB_BAR_HEIGHT,
           paddingTop: 8,
-          paddingBottom: Platform.OS === 'ios' ? 28 : 10,
-          elevation: 8,
-          shadowColor: colors.ink,
-          shadowOffset: { width: 0, height: -2 },
-          shadowOpacity: 0.04,
-          shadowRadius: 8,
+          paddingBottom: TAB_BAR_PAD_BOTTOM,
+          elevation: 12,
+          shadowColor: colors.sageDark,
+          shadowOffset: { width: 0, height: -4 },
+          shadowOpacity: 0.06,
+          shadowRadius: 12,
         },
         tabBarLabelStyle: {
           fontSize: typography.fontSize.micro,
-          fontWeight: '600',
-          letterSpacing: 0.2,
+          fontWeight: '700',
+          letterSpacing: 0.3,
           marginTop: 2,
         },
       }}
@@ -62,12 +65,22 @@ export default function TabsLayout() {
         name="companion"
         options={{
           title: 'Zenny',
-          tabBarIcon: ({ color, focused }) => (
+          tabBarActiveTintColor: colors.skyWarm,
+          tabBarInactiveTintColor: 'rgba(255,255,255,0.55)',
+          tabBarStyle: {
+            backgroundColor: colors.grassDeep,
+            borderTopWidth: 0,
+            height: TAB_BAR_HEIGHT,
+            paddingTop: 8,
+            paddingBottom: TAB_BAR_PAD_BOTTOM,
+            elevation: 0,
+          },
+          tabBarIcon: ({ focused }) => (
             <View style={focused ? styles.companionActiveIcon : styles.companionIcon}>
               <Ionicons
-                name={focused ? 'mic' : 'mic-outline'}
+                name={focused ? 'leaf' : 'leaf-outline'}
                 size={20}
-                color={focused ? colors.white : colors.primary}
+                color={focused ? colors.grassDeep : colors.skyWarm}
               />
             </View>
           ),
@@ -122,7 +135,7 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: radii.full,
-    backgroundColor: colors.primarySoft,
+    backgroundColor: 'rgba(231, 242, 201, 0.18)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -130,7 +143,7 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: radii.full,
-    backgroundColor: colors.primary,
+    backgroundColor: colors.skyWarm,
     alignItems: 'center',
     justifyContent: 'center',
   },

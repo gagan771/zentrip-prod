@@ -61,7 +61,7 @@ function RootNavigator() {
           />
           <Stack.Screen
             name="services/booking/index"
-            options={{ title: 'Book trains, buses, flights, stays', headerBackTitle: 'Back' }}
+            options={{ headerShown: false, title: 'Book hotels, cabs & flights', headerBackTitle: 'Back' }}
           />
           <Stack.Screen
             name="payments/index"
@@ -74,6 +74,10 @@ function RootNavigator() {
           <Stack.Screen
             name="buddy/index"
             options={{ title: 'Travel Buddy Match', headerBackTitle: 'Back' }}
+          />
+          <Stack.Screen
+            name="buddy/chat/[pairId]"
+            options={{ title: 'Buddy chat', headerBackTitle: 'Back' }}
           />
           <Stack.Screen
             name="translation/index"

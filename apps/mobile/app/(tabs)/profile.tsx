@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   ScrollView,
   StyleSheet,
   Switch,
@@ -8,10 +9,17 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { logout } from '../../lib/auth';
+import {
+  formatKnowledgeSyncedAt,
+  readKnowledgeCacheMeta,
+  refreshKnowledgeCache,
+} from '../../lib/knowledge';
+import { latestPhilosophy, listPreferences, syncTravelPhilosophy } from '../../lib/preferences';
 import { colors, radii, shadows, spacing, typography } from '../../lib/theme';
 import { TravelerPreferences, useStore } from '../../store/useStore';
 
@@ -42,20 +50,95 @@ const BUDGET_OPTIONS: Array<{ id: TravelerPreferences['budget']; label: string; 
 export default function ProfileScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const queryClient = useQueryClient();
   const user = useStore((s) => s.user);
   const setUser = useStore((s) => s.setUser);
   const preferences = useStore((s) => s.travelerPreferences);
   const setPreferences = useStore((s) => s.setTravelerPreferences);
-  const [notifications, setNotifications] = useState(true);
-  const [offlineSync, setOfflineSync] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [prefSync, setPrefSync] = useState<'local' | 'saving' | 'saved' | 'offline'>('local');
+  const syncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isGuest = !user || user.id === 'guest';
+  const knowledgeMetaQuery = useQuery({
+    queryKey: ['knowledgeCacheMeta'],
+    queryFn: readKnowledgeCacheMeta,
+  });
+  const knowledgeSync = useMutation({
+    mutationFn: refreshKnowledgeCache,
+    onSuccess: (meta) => {
+      queryClient.setQueryData(['knowledgeCacheMeta'], meta);
+      queryClient.invalidateQueries({ queryKey: ['explore-knowledge'] });
+      queryClient.invalidateQueries({ queryKey: ['explore-knowledge-cache'] });
+      queryClient.invalidateQueries({ queryKey: ['guide-place-brief'] });
+      queryClient.invalidateQueries({ queryKey: ['guide-place-brief-cache'] });
+      queryClient.invalidateQueries({ queryKey: ['payment-knowledge'] });
+      queryClient.invalidateQueries({ queryKey: ['payment-knowledge-cache'] });
+    },
+  });
+  const knowledgeMeta = knowledgeSync.data ?? knowledgeMetaQuery.data;
+  const knowledgeSyncedAt = knowledgeMeta?.lastSyncedAt ?? null;
+  const knowledgeSyncedMs = knowledgeSyncedAt ? new Date(knowledgeSyncedAt).getTime() : NaN;
+  const knowledgeLive =
+    !knowledgeSync.isPending &&
+    !knowledgeSync.isError &&
+    Number.isFinite(knowledgeSyncedMs) &&
+    Date.now() - knowledgeSyncedMs < 45_000;
+
+  useFocusEffect(
+    useCallback(() => {
+      queryClient.invalidateQueries({ queryKey: ['knowledgeCacheMeta'] });
+    }, [queryClient]),
+  );
+
+  useEffect(() => {
+    if (isGuest) {
+      setPrefSync('local');
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const remote = await listPreferences();
+        if (cancelled) return;
+        const parsed = latestPhilosophy(remote);
+        if (parsed) {
+          setPreferences(parsed);
+          setPrefSync('saved');
+        } else {
+          await syncTravelPhilosophy(useStore.getState().travelerPreferences);
+          if (!cancelled) setPrefSync('saved');
+        }
+      } catch {
+        if (!cancelled) setPrefSync('offline');
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (syncTimer.current) clearTimeout(syncTimer.current);
+    };
+  }, [isGuest, user?.id, setPreferences]);
+
+  function updatePreferences(partial: Partial<TravelerPreferences>) {
+    setPreferences(partial);
+    if (isGuest) {
+      setPrefSync('local');
+      return;
+    }
+    setPrefSync('saving');
+    if (syncTimer.current) clearTimeout(syncTimer.current);
+    syncTimer.current = setTimeout(() => {
+      syncTravelPhilosophy(useStore.getState().travelerPreferences)
+        .then(() => setPrefSync('saved'))
+        .catch(() => setPrefSync('offline'));
+    }, 700);
+  }
 
   function toggleInterest(interest: string) {
     const exists = preferences.interests.some((i) => i.toLowerCase() === interest.toLowerCase());
     const interests = exists
       ? preferences.interests.filter((item) => item.toLowerCase() !== interest.toLowerCase())
       : [...preferences.interests, interest];
-    setPreferences({ interests });
+    updatePreferences({ interests });
   }
 
   async function handleLogout() {
@@ -80,7 +163,9 @@ export default function ProfileScreen() {
           <View style={styles.passportTopline}>
             <View style={styles.passportBadge}>
               <Ionicons name="sparkles" size={10} color="#E8D2AA" />
-              <Text style={styles.passportBadgeText}>ZENTRIP TRAVELER</Text>
+              <Text style={styles.passportBadgeText}>
+                {isGuest ? 'GUEST PASSPORT' : 'ZENTRIP TRAVELER'}
+              </Text>
             </View>
             <Ionicons name="finger-print-outline" size={24} color="rgba(255, 255, 255, 0.4)" />
           </View>
@@ -93,9 +178,25 @@ export default function ProfileScreen() {
             </View>
             <View style={styles.avatarInfo}>
               <Text style={styles.name}>{user?.name ?? 'Traveler'}</Text>
-              <Text style={styles.email}>{user?.email ?? 'Zentrip Explorer'}</Text>
+              <Text style={styles.email}>
+                {isGuest ? 'Exploring as guest — Sign in to save trips' : user?.email ?? 'Zentrip Explorer'}
+              </Text>
             </View>
           </View>
+
+          {isGuest ? (
+            <TouchableOpacity
+              style={styles.guestSignIn}
+              onPress={() => {
+                setUser(null);
+                router.replace('/(auth)/login');
+              }}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.guestSignInText}>Sign in to save trips</Text>
+              <Ionicons name="arrow-forward" size={16} color={colors.ink} />
+            </TouchableOpacity>
+          ) : null}
 
           {/* Stats Bar */}
           <View style={styles.statsBar}>
@@ -122,7 +223,17 @@ export default function ProfileScreen() {
             <Ionicons name="options-outline" size={18} color={colors.primary} />
             <View>
               <Text style={styles.sectionTitle}>Travel Philosophy</Text>
-              <Text style={styles.sectionSubtitle}>Tailors Zenny’s pacing and recommendations</Text>
+              <Text style={styles.sectionSubtitle}>
+                {isGuest
+                  ? 'Saved on this device. Sign in to keep this on your account.'
+                  : prefSync === 'saving'
+                    ? 'Saving to your account…'
+                    : prefSync === 'saved'
+                      ? 'Saved to your account via preferences'
+                      : prefSync === 'offline'
+                        ? 'Couldn’t reach the server — saved on this device'
+                        : 'Tailors Zenny’s pacing and recommendations'}
+              </Text>
             </View>
           </View>
 
@@ -135,7 +246,7 @@ export default function ProfileScreen() {
                 <TouchableOpacity
                   key={item.id}
                   style={[styles.paceCard, active && styles.paceCardActive]}
-                  onPress={() => setPreferences({ pace: item.id })}
+                  onPress={() => updatePreferences({ pace: item.id })}
                   activeOpacity={0.8}
                 >
                   <Text style={[styles.paceCardTitle, active && styles.paceCardTitleActive]}>
@@ -156,7 +267,7 @@ export default function ProfileScreen() {
                 <TouchableOpacity
                   key={item.id}
                   style={[styles.budgetChip, active && styles.budgetChipActive]}
-                  onPress={() => setPreferences({ budget: item.id })}
+                  onPress={() => updatePreferences({ budget: item.id })}
                   activeOpacity={0.8}
                 >
                   <Ionicons
@@ -209,29 +320,93 @@ export default function ProfileScreen() {
           <View style={styles.settingRow}>
             <View style={styles.settingCopy}>
               <Text style={styles.settingTitle}>Mindful Travel Reminders</Text>
-              <Text style={styles.settingBody}>Gentle notifications for morning departures and sunset viewpoints.</Text>
+              <Text style={styles.settingBody}>
+                Gentle notifications for morning departures and sunset viewpoints.
+              </Text>
+              <Text style={styles.comingSoon}>Coming soon</Text>
             </View>
             <Switch
-              value={notifications}
-              onValueChange={setNotifications}
+              value={false}
+              disabled
               trackColor={{ false: colors.borderDark, true: colors.sageSoft }}
-              thumbColor={notifications ? colors.sage : colors.white}
+              thumbColor={colors.white}
             />
           </View>
 
           <View style={styles.divider} />
 
-          <View style={styles.settingRow}>
+          <View style={styles.knowledgeBlock}>
             <View style={styles.settingCopy}>
               <Text style={styles.settingTitle}>Offline Knowledge Cache</Text>
-              <Text style={styles.settingBody}>Keep corridor monument data available without data connectivity.</Text>
+              <Text style={styles.settingBody}>
+                Last successful knowledge search is saved on this device. Explore, Guide, and Payments use it when the
+                server is unreachable — never shown as live.
+              </Text>
+              <View
+                style={[
+                  styles.knowledgeStatus,
+                  knowledgeLive ? styles.knowledgeStatusLive : knowledgeSyncedAt ? styles.knowledgeStatusCached : null,
+                ]}
+              >
+                <Ionicons
+                  name={
+                    knowledgeLive
+                      ? 'cloud-done-outline'
+                      : knowledgeSyncedAt
+                        ? 'cloud-offline-outline'
+                        : 'cloud-outline'
+                  }
+                  size={14}
+                  color={knowledgeLive ? colors.sage : knowledgeSyncedAt ? colors.goldDark : colors.inkMuted}
+                />
+                <Text
+                  style={[
+                    styles.knowledgeStatusText,
+                    knowledgeLive
+                      ? styles.knowledgeStatusTextLive
+                      : knowledgeSyncedAt
+                        ? styles.knowledgeStatusTextCached
+                        : null,
+                  ]}
+                >
+                  {knowledgeLive
+                    ? `Live from server · synced ${knowledgeSyncedAt ? formatKnowledgeSyncedAt(knowledgeSyncedAt) : 'just now'}`
+                    : knowledgeSyncedAt
+                      ? `Last synced ${formatKnowledgeSyncedAt(knowledgeSyncedAt)} · not live`
+                      : 'Never synced — needs a network once'}
+                </Text>
+              </View>
+              {knowledgeMeta && knowledgeMeta.queryCount > 0 ? (
+                <Text style={styles.settingBody}>
+                  {knowledgeMeta.queryCount} saved search
+                  {knowledgeMeta.queryCount === 1 ? '' : 'es'}
+                  {knowledgeMeta.lastQuery
+                    ? ` · last “${knowledgeMeta.lastQuery}${knowledgeMeta.lastCity ? ` · ${knowledgeMeta.lastCity}` : ''}”`
+                    : ''}
+                </Text>
+              ) : null}
+              {knowledgeSync.isError ? (
+                <Text style={styles.knowledgeError}>
+                  {knowledgeSyncedAt
+                    ? 'Could not reach the server. Saved citations stay last-synced, not live.'
+                    : 'Could not sync. Knowledge needs a network once.'}
+                </Text>
+              ) : null}
             </View>
-            <Switch
-              value={offlineSync}
-              onValueChange={setOfflineSync}
-              trackColor={{ false: colors.borderDark, true: colors.sageSoft }}
-              thumbColor={offlineSync ? colors.sage : colors.white}
-            />
+            <TouchableOpacity
+              style={[styles.knowledgeSyncBtn, knowledgeSync.isPending && styles.knowledgeSyncBtnDisabled]}
+              onPress={() => knowledgeSync.mutate()}
+              disabled={knowledgeSync.isPending}
+              activeOpacity={0.85}
+            >
+              {knowledgeSync.isPending ? (
+                <ActivityIndicator color={colors.white} />
+              ) : (
+                <Text style={styles.knowledgeSyncText}>
+                  {knowledgeSyncedAt ? 'Refresh cache' : 'Sync corridor knowledge'}
+                </Text>
+              )}
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -249,15 +424,29 @@ export default function ProfileScreen() {
         </TouchableOpacity>
 
         {/* Sign Out Button */}
-        <TouchableOpacity
-          style={styles.logoutButton}
-          onPress={handleLogout}
-          disabled={loggingOut}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="log-out-outline" size={18} color={colors.error} style={{ marginRight: 6 }} />
-          <Text style={styles.logoutText}>{loggingOut ? 'Signing out...' : 'Sign Out'}</Text>
-        </TouchableOpacity>
+        {!isGuest ? (
+          <TouchableOpacity
+            style={styles.logoutButton}
+            onPress={handleLogout}
+            disabled={loggingOut}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="log-out-outline" size={18} color={colors.error} style={{ marginRight: 6 }} />
+            <Text style={styles.logoutText}>{loggingOut ? 'Signing out...' : 'Sign Out'}</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={styles.logoutButton}
+            onPress={() => {
+              setUser(null);
+              router.replace('/(auth)/login');
+            }}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="log-in-outline" size={18} color={colors.primary} style={{ marginRight: 6 }} />
+            <Text style={[styles.logoutText, { color: colors.primary }]}>Sign in</Text>
+          </TouchableOpacity>
+        )}
 
         <Text style={styles.version}>Zentrip · India Travel Companion v1.0.0</Text>
       </ScrollView>
@@ -279,8 +468,8 @@ const styles = StyleSheet.create({
   },
 
   passportCard: {
-    backgroundColor: colors.ink,
-    borderRadius: radii.xl,
+    backgroundColor: colors.sageDark,
+    borderRadius: radii.xxl,
     padding: spacing.xl,
     gap: spacing.lg,
     ...shadows.lg,
@@ -337,6 +526,21 @@ const styles = StyleSheet.create({
   email: {
     color: '#D1D7DC',
     fontSize: typography.fontSize.caption,
+  },
+  guestSignIn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.goldSoft,
+    borderRadius: radii.md,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+  },
+  guestSignInText: {
+    color: colors.ink,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '800',
   },
 
   statsBar: {
@@ -512,6 +716,71 @@ const styles = StyleSheet.create({
     color: colors.inkMuted,
     fontSize: typography.fontSize.micro,
     lineHeight: 15,
+  },
+  comingSoon: {
+    color: colors.goldDark,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    marginTop: 2,
+    textTransform: 'uppercase',
+  },
+  knowledgeBlock: {
+    gap: spacing.sm,
+  },
+  knowledgeStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 6,
+    backgroundColor: colors.cardWarm,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  knowledgeStatusLive: {
+    backgroundColor: colors.successBg,
+    borderColor: colors.sageSoft,
+  },
+  knowledgeStatusCached: {
+    backgroundColor: colors.warningBg,
+    borderColor: colors.border,
+  },
+  knowledgeStatusText: {
+    flex: 1,
+    color: colors.inkMuted,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '700',
+  },
+  knowledgeStatusTextLive: {
+    color: colors.sage,
+  },
+  knowledgeStatusTextCached: {
+    color: colors.goldDark,
+  },
+  knowledgeError: {
+    color: colors.error,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  knowledgeSyncBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.ink,
+    borderRadius: radii.md,
+    paddingVertical: spacing.sm,
+    minHeight: 40,
+  },
+  knowledgeSyncBtnDisabled: {
+    opacity: 0.7,
+  },
+  knowledgeSyncText: {
+    color: colors.white,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '800',
   },
   divider: {
     height: 1,

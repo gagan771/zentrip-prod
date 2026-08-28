@@ -15,11 +15,11 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { translatePhoto, translateSpeech, translateText, type TranslationResponse } from '../../lib/translation';
+import { lookupOfflinePhrase, OFFLINE_PHRASE_LIST } from '../../lib/offline-phrasebook';
 import { speakNow, stopRecordingSafely, VOICE_RECORDING } from '../../lib/speech';
-import { colors, radii, spacing } from '../../lib/theme';
+import { colors, radii, shadows, spacing, typography } from '../../lib/theme';
 
 const LANGUAGES = [
   { id: 'hindi', label: 'Hindi', speech: 'hi-IN' },
@@ -28,21 +28,27 @@ const LANGUAGES = [
   { id: 'bengali', label: 'Bengali', speech: 'bn-IN' },
   { id: 'malayalam', label: 'Malayalam', speech: 'ml-IN' },
 ];
-const QUICK_PHRASES = [
-  'Thank you',
-  'How much does this cost?',
-  'Where is the toilet?',
-  'I need help',
-  'I am vegetarian',
-  'I need drinking water',
-  'Where is the railway station?',
-  'Please make it less spicy',
-];
 
 type Side = 'you' | 'them';
 
+type LocalTurn = TranslationResponse & { side: Side };
+
+function offlineTurn(text: string, targetLanguage: string, side: Side): LocalTurn | null {
+  const hit = lookupOfflinePhrase(text, targetLanguage);
+  if (!hit) return null;
+  return {
+    sourceText: hit.english,
+    targetLanguage,
+    translatedText: hit.native,
+    pronunciation: hit.pronunciation,
+    confidence: 'verified',
+    mode: 'offline_phrasebook',
+    context: [],
+    side,
+  };
+}
+
 export default function TranslationScreen() {
-  const insets = useSafeAreaInsets();
   const recorder = useAudioRecorder(VOICE_RECORDING);
   useAudioRecorderState(recorder);
   const cameraRef = useRef<CameraView>(null);
@@ -51,14 +57,19 @@ export default function TranslationScreen() {
   const [text, setText] = useState('Thank you');
   const [targetLanguage, setTargetLanguage] = useState('hindi');
   const [busy, setBusy] = useState(false);
+  const [recording, setRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [turns, setTurns] = useState<Array<TranslationResponse & { side: Side }>>([]);
+  const [turns, setTurns] = useState<LocalTurn[]>([]);
   const selected = LANGUAGES.find((language) => language.id === targetLanguage) ?? LANGUAGES[0];
   const recordingStarted = useRef(false);
   const voiceSide = useRef<Side>('you');
 
   function speak(value: string, locale: string) {
     speakNow(value, locale);
+  }
+
+  function pushTurn(turn: LocalTurn) {
+    setTurns((prev) => [turn, ...prev.slice(0, 11)]);
   }
 
   async function startVoice(side: Side) {
@@ -72,6 +83,7 @@ export default function TranslationScreen() {
       await recorder.prepareToRecordAsync();
       recorder.record();
       recordingStarted.current = true;
+      setRecording(true);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to start the microphone.');
     }
@@ -80,6 +92,7 @@ export default function TranslationScreen() {
   async function finishVoice() {
     if (!recordingStarted.current) return;
     recordingStarted.current = false;
+    setRecording(false);
     const side = voiceSide.current;
     setBusy(true);
     try {
@@ -89,27 +102,56 @@ export default function TranslationScreen() {
       const sourceLanguage = side === 'you' ? 'en' : targetLanguage;
       const target = side === 'you' ? targetLanguage : 'english';
       const result = await translateSpeech(recorder.uri, { sourceLanguage, targetLanguage: target });
-      setTurns((prev) => [{ ...result, side }, ...prev.slice(0, 11)]);
+      pushTurn({ ...result, side });
       speak(result.translatedText, side === 'you' ? selected.speech : 'en-IN');
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Voice translation failed');
+      setError(
+        caught instanceof Error
+          ? `${caught.message} Tip: use Offline phrasebook below when the network is weak.`
+          : 'Voice translation failed'
+      );
     } finally {
       setBusy(false);
     }
   }
 
   async function runText() {
+    const phrase = text.trim();
+    if (!phrase) return;
     setBusy(true);
     setError(null);
     try {
-      const result = await translateText({ text: text.trim(), targetLanguage, sourceLanguage: 'en' });
-      setTurns((prev) => [{ ...result, side: 'you' }, ...prev.slice(0, 11)]);
+      const result = await translateText({ text: phrase, targetLanguage, sourceLanguage: 'en' });
+      pushTurn({ ...result, side: 'you' });
       speak(result.translatedText, selected.speech);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Translation failed');
+      const fallback = offlineTurn(phrase, targetLanguage, 'you');
+      if (fallback) {
+        pushTurn(fallback);
+        speak(fallback.translatedText, selected.speech);
+        setError('Live translation unavailable — used offline phrasebook.');
+      } else {
+        setError(
+          caught instanceof Error
+            ? `${caught.message} This phrase is not in the offline book yet.`
+            : 'Translation failed'
+        );
+      }
     } finally {
       setBusy(false);
     }
+  }
+
+  function runOffline(phrase: string) {
+    setText(phrase);
+    const fallback = offlineTurn(phrase, targetLanguage, 'you');
+    if (!fallback) {
+      setError('That phrase is not in the curated offline book yet.');
+      return;
+    }
+    setError(null);
+    pushTurn(fallback);
+    speak(fallback.translatedText, selected.speech);
   }
 
   async function captureMenu() {
@@ -120,7 +162,7 @@ export default function TranslationScreen() {
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.45, skipProcessing: true });
       if (!photo?.uri) throw new Error('The photo was not saved.');
       const result = await translatePhoto(photo.uri, { targetLanguage });
-      setTurns((prev) => [{ ...result, side: 'them' }, ...prev.slice(0, 11)]);
+      pushTurn({ ...result, side: 'them' });
       speak(result.translatedText, selected.speech);
       setCameraOpen(false);
     } catch (caught) {
@@ -131,11 +173,11 @@ export default function TranslationScreen() {
   }
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={[styles.content, { paddingTop: insets.top + 16 }]}>
-      <Text style={styles.eyebrow}>LIVE TWO-PERSON TRANSLATOR</Text>
-      <Text style={styles.title}>Speak, type, or scan a menu.</Text>
+    <ScrollView style={styles.screen} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <Text style={styles.eyebrow}>TRAVEL TRANSLATOR</Text>
+      <Text style={styles.title}>Speak, type, or scan a menu</Text>
       <Text style={styles.subtitle}>
-        Phrasebook first, then live translation. Hold You to speak English; hold Them for the local language. Camera reads menus and signs.
+        Offline phrasebook works without data. Hold You for English; hold Them for the local language.
       </Text>
 
       <Text style={styles.label}>Local language</Text>
@@ -146,31 +188,50 @@ export default function TranslationScreen() {
             style={[styles.languageChip, targetLanguage === language.id && styles.languageChipActive]}
             onPress={() => setTargetLanguage(language.id)}
           >
-            <Text style={targetLanguage === language.id ? styles.languageTextActive : styles.languageText}>{language.label}</Text>
+            <Text style={targetLanguage === language.id ? styles.languageTextActive : styles.languageText}>
+              {language.label}
+            </Text>
           </Pressable>
         ))}
       </View>
 
       <View style={styles.talkRow}>
         <Pressable
-          style={styles.talkButton}
+          style={[styles.talkButton, recording && voiceSide.current === 'you' && styles.talkRecording]}
           disabled={busy}
           onPressIn={() => startVoice('you')}
           onPressOut={finishVoice}
         >
           <Text style={styles.talkTitle}>You</Text>
-          <Text style={styles.talkSub}>English · hold to talk</Text>
+          <Text style={styles.talkSub}>
+            {recording && voiceSide.current === 'you' ? 'Recording… release to translate' : 'English · hold to talk'}
+          </Text>
         </Pressable>
         <Pressable
-          style={[styles.talkButton, styles.talkThem]}
+          style={[
+            styles.talkButton,
+            styles.talkThem,
+            recording && voiceSide.current === 'them' && styles.talkRecording,
+          ]}
           disabled={busy}
           onPressIn={() => startVoice('them')}
           onPressOut={finishVoice}
         >
           <Text style={styles.talkTitle}>Them</Text>
-          <Text style={styles.talkSub}>{selected.label} · hold to talk</Text>
+          <Text style={styles.talkSub}>
+            {recording && voiceSide.current === 'them'
+              ? 'Recording… release to translate'
+              : `${selected.label} · hold to talk`}
+          </Text>
         </Pressable>
       </View>
+
+      {recording ? (
+        <View style={styles.recordingBanner}>
+          <View style={styles.recordingDot} />
+          <Text style={styles.recordingText}>Listening — release when finished</Text>
+        </View>
+      ) : null}
 
       <Pressable
         style={styles.secondary}
@@ -192,27 +253,56 @@ export default function TranslationScreen() {
         <View style={styles.cameraWrap}>
           <CameraView ref={cameraRef} style={styles.camera} facing="back" onCameraReady={() => undefined} />
           <Pressable style={styles.primaryButton} disabled={busy} onPress={captureMenu}>
-            {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>CAPTURE & TRANSLATE</Text>}
+            {busy ? <ActivityIndicator color={colors.white} /> : <Text style={styles.primaryText}>CAPTURE & TRANSLATE</Text>}
           </Pressable>
         </View>
       ) : null}
 
       <View style={styles.panel}>
-        <Text style={styles.label}>Or type a phrase</Text>
-        <TextInput value={text} onChangeText={setText} multiline style={styles.input} placeholder="Type in English" placeholderTextColor="#8A8F92" />
+        <Text style={styles.label}>Offline phrasebook</Text>
+        <Text style={styles.panelHint}>Works without network. Tap a phrase for {selected.label}.</Text>
         <View style={styles.quickRow}>
-          {QUICK_PHRASES.map((phrase) => (
-            <Pressable key={phrase} style={styles.quickChip} onPress={() => setText(phrase)}>
+          {OFFLINE_PHRASE_LIST.map((phrase) => (
+            <Pressable key={phrase} style={styles.quickChip} onPress={() => runOffline(phrase)}>
               <Text style={styles.quickText}>{phrase}</Text>
             </Pressable>
           ))}
         </View>
       </View>
 
-      <Pressable style={[styles.primaryButton, (!text.trim() || busy) && styles.disabled]} disabled={!text.trim() || busy} onPress={runText}>
-        {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>TRANSLATE PHRASE</Text>}
+      <View style={styles.panel}>
+        <Text style={styles.label}>Or type a phrase</Text>
+        <TextInput
+          value={text}
+          onChangeText={setText}
+          multiline
+          style={styles.input}
+          placeholder="Type in English"
+          placeholderTextColor={colors.inkSubtle}
+        />
+      </View>
+
+      <Pressable
+        style={[styles.primaryButton, (!text.trim() || busy) && styles.disabled]}
+        disabled={!text.trim() || busy}
+        onPress={runText}
+      >
+        {busy && !recording ? (
+          <ActivityIndicator color={colors.white} />
+        ) : (
+          <Text style={styles.primaryText}>TRANSLATE PHRASE</Text>
+        )}
       </Pressable>
       {error ? <Text style={styles.error}>{error}</Text> : null}
+
+      {!turns.length ? (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyTitle}>No conversation yet</Text>
+          <Text style={styles.emptySubtitle}>
+            Start with an offline phrase, or hold You / Them when you have a connection for live speech.
+          </Text>
+        </View>
+      ) : null}
 
       {turns.map((turn, index) => (
         <View key={`${turn.sourceText}-${index}`} style={styles.resultPanel}>
@@ -231,44 +321,147 @@ export default function TranslationScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#FBFAF6' },
-  content: { padding: 20, paddingBottom: 48, gap: 14 },
-  eyebrow: { color: '#8C3C29', fontSize: 10, fontWeight: '800', letterSpacing: 1.5 },
-  title: { color: '#1C2128', fontSize: 28, fontWeight: '800', marginTop: 4 },
-  subtitle: { color: '#687078', fontSize: 14, lineHeight: 21, marginTop: -8 },
-  label: { color: '#1C2128', fontSize: 13, fontWeight: '800' },
-  panel: { backgroundColor: '#fff', borderColor: '#E5E1D7', borderRadius: 16, borderWidth: 1, gap: 10, padding: 16 },
-  input: { color: '#1C2128', fontSize: 17, minHeight: 76, textAlignVertical: 'top' },
+  screen: { flex: 1, backgroundColor: colors.background },
+  content: { padding: spacing.xl, paddingBottom: spacing.xxxl, gap: spacing.md },
+  eyebrow: {
+    color: colors.primary,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+  },
+  title: {
+    color: colors.ink,
+    fontSize: typography.fontSize.display,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  subtitle: {
+    color: colors.inkMuted,
+    fontSize: typography.fontSize.body,
+    lineHeight: typography.lineHeight.body,
+    marginTop: -4,
+  },
+  label: {
+    color: colors.ink,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '800',
+  },
+  panel: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    gap: spacing.sm,
+    padding: spacing.lg,
+    ...shadows.sm,
+  },
+  panelHint: {
+    color: colors.inkMuted,
+    fontSize: typography.fontSize.caption,
+    marginTop: -4,
+  },
+  input: {
+    color: colors.ink,
+    fontSize: typography.fontSize.title2,
+    minHeight: 76,
+    textAlignVertical: 'top',
+  },
   quickRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
-  quickChip: { backgroundColor: '#F1EAD6', borderRadius: 14, paddingHorizontal: 10, paddingVertical: 7 },
-  quickText: { color: '#1C2128', fontSize: 12, fontWeight: '600' },
-  languageRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  languageChip: { borderWidth: 1, borderColor: '#E5E1D7', borderRadius: 16, paddingHorizontal: 10, paddingVertical: 7 },
-  languageChipActive: { backgroundColor: '#8C3C29', borderColor: '#8C3C29' },
-  languageText: { color: '#1C2128', fontWeight: '700' },
-  languageTextActive: { color: '#fff', fontWeight: '700' },
-  talkRow: { flexDirection: 'row', gap: 10 },
+  quickChip: {
+    backgroundColor: colors.sandLight,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 7,
+  },
+  quickText: { color: colors.ink, fontSize: typography.fontSize.caption, fontWeight: '600' },
+  languageRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  languageChip: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.lg,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 7,
+  },
+  languageChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  languageText: { color: colors.ink, fontWeight: '700' },
+  languageTextActive: { color: colors.white, fontWeight: '700' },
+  talkRow: { flexDirection: 'row', gap: spacing.sm },
   talkButton: {
     flex: 1,
     backgroundColor: colors.primarySoft,
     borderRadius: radii.md,
-    padding: 16,
+    padding: spacing.lg,
     minHeight: 88,
     justifyContent: 'center',
   },
   talkThem: { backgroundColor: colors.sageSoft },
-  talkTitle: { fontSize: 18, fontWeight: '800', color: colors.ink },
-  talkSub: { color: colors.inkMuted, marginTop: 4 },
-  secondary: { borderWidth: 1, borderColor: '#E5E1D7', borderRadius: 14, padding: 12, alignItems: 'center' },
-  secondaryText: { fontWeight: '800', color: '#1C2128' },
-  cameraWrap: { height: 280, borderRadius: 16, overflow: 'hidden', gap: 8 },
+  talkRecording: {
+    borderWidth: 2,
+    borderColor: colors.error,
+  },
+  talkTitle: { fontSize: typography.fontSize.title2, fontWeight: '800', color: colors.ink },
+  talkSub: { color: colors.inkMuted, marginTop: 4, fontSize: typography.fontSize.caption },
+  recordingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.errorBg,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  recordingDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.error,
+  },
+  recordingText: {
+    color: colors.error,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '700',
+  },
+  secondary: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    padding: spacing.md,
+    alignItems: 'center',
+    backgroundColor: colors.card,
+  },
+  secondaryText: { fontWeight: '800', color: colors.ink },
+  cameraWrap: { height: 280, borderRadius: radii.lg, overflow: 'hidden', gap: spacing.sm },
   camera: { flex: 1 },
-  primaryButton: { backgroundColor: '#8C3C29', borderRadius: 14, minHeight: 48, alignItems: 'center', justifyContent: 'center' },
-  primaryText: { color: '#fff', fontWeight: '800' },
+  primaryButton: {
+    backgroundColor: colors.primary,
+    borderRadius: radii.md,
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  primaryText: { color: colors.white, fontWeight: '800' },
   disabled: { opacity: 0.5 },
-  error: { color: '#B42318' },
-  resultPanel: { backgroundColor: '#fff', borderColor: '#E5E1D7', borderRadius: 16, borderWidth: 1, padding: 16, gap: 6 },
-  source: { color: '#687078', fontSize: 13 },
-  nativeText: { color: '#1C2128', fontSize: 22, fontWeight: '800' },
-  pronunciation: { color: '#687078' },
+  error: { color: colors.error, fontSize: typography.fontSize.caption, lineHeight: 18 },
+  emptyState: {
+    backgroundColor: colors.cardWarm,
+    borderRadius: radii.lg,
+    padding: spacing.lg,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  emptyTitle: { color: colors.ink, fontWeight: '800', fontSize: typography.fontSize.headline },
+  emptySubtitle: { color: colors.inkMuted, fontSize: typography.fontSize.caption, lineHeight: 18 },
+  resultPanel: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    padding: spacing.lg,
+    gap: 6,
+    ...shadows.sm,
+  },
+  source: { color: colors.inkMuted, fontSize: typography.fontSize.caption },
+  nativeText: { color: colors.ink, fontSize: 22, fontWeight: '800' },
+  pronunciation: { color: colors.inkMuted },
 });

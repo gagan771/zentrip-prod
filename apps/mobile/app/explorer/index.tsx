@@ -1,23 +1,50 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Location from 'expo-location';
 import { useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 
-import { activateExplorer, applyExplorer, getExplorerMissions, getExplorerProfile, getExplorerSubmissions, submitExplorerMission, type ExplorerMission } from '../../lib/explorer';
+import {
+  activateExplorer,
+  applyExplorer,
+  getExplorerMissions,
+  getExplorerProfile,
+  getExplorerSubmissions,
+  submitExplorerMission,
+  type ExplorerMission,
+} from '../../lib/explorer';
+import { colors, radii, spacing, typography } from '../../lib/theme';
 
 export default function ExplorerScreen() {
-  const insets = useSafeAreaInsets();
   const client = useQueryClient();
   const profile = useQuery({ queryKey: ['explorer-profile'], queryFn: getExplorerProfile });
   const missions = useQuery({ queryKey: ['explorer-missions'], queryFn: () => getExplorerMissions() });
-  const submissions = useQuery({ queryKey: ['explorer-submissions'], queryFn: getExplorerSubmissions, enabled: Boolean(profile.data) });
+  const submissions = useQuery({
+    queryKey: ['explorer-submissions'],
+    queryFn: getExplorerSubmissions,
+    enabled: Boolean(profile.data),
+  });
   const [city, setCity] = useState('Jaipur');
-  const [motivation, setMotivation] = useState('I want to contribute careful, location-verified observations for future travelers.');
+  const [motivation, setMotivation] = useState(
+    'I want to contribute careful, location-verified observations for future travelers.'
+  );
   const [selected, setSelected] = useState<ExplorerMission | null>(null);
   const [submission, setSubmission] = useState('');
-  const applyMutation = useMutation({ mutationFn: () => applyExplorer(city, motivation), onSuccess: () => client.invalidateQueries({ queryKey: ['explorer-profile'] }) });
-  const activateMutation = useMutation({ mutationFn: activateExplorer, onSuccess: () => client.invalidateQueries({ queryKey: ['explorer-profile'] }) });
+  const applyMutation = useMutation({
+    mutationFn: () => applyExplorer(city, motivation),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['explorer-profile'] }),
+  });
+  const activateMutation = useMutation({
+    mutationFn: activateExplorer,
+    onSuccess: () => client.invalidateQueries({ queryKey: ['explorer-profile'] }),
+  });
   const submitMutation = useMutation({
     mutationFn: async () => {
       let latitude: number | undefined;
@@ -37,21 +64,254 @@ export default function ExplorerScreen() {
     },
   });
   const profileStatus = profile.data?.status;
-  return <ScrollView style={styles.screen} contentContainerStyle={[styles.content, { paddingTop: insets.top + 20 }]}>
-    <Text style={styles.eyebrow}>PHASE 5 / EXPLORER PROGRAM</Text><Text style={styles.title}>Verify what travelers need.</Text><Text style={styles.subtitle}>Missions produce reviewable evidence for places, events, and stays. Points never justify unsafe exploration.</Text>
-    {profile.data ? <View style={styles.profile}><Text style={styles.profileTitle}>Explorer status · {profileStatus}</Text><Text style={styles.profileStats}>{profile.data.missionsCompleted} missions · {profile.data.reputationPoints} reputation points</Text><Text style={styles.note}>Submissions require approval before they can become verified content.</Text>{profileStatus === 'applicant' ? <TouchableOpacity style={styles.primary} onPress={() => activateMutation.mutate()} disabled={activateMutation.isPending}><Text style={styles.primaryText}>{activateMutation.isPending ? 'Submitting…' : 'Complete safety briefing & request approval'}</Text></TouchableOpacity> : null}{profileStatus === 'pending_review' ? <Text style={styles.note}>Safety briefing recorded. A staff reviewer must approve your profile before missions unlock.</Text> : null}</View> : <View style={styles.panel}><Text style={styles.sectionTitle}>Apply to participate</Text><TextInput style={styles.input} value={city} onChangeText={setCity} placeholder="Corridor city" /><TextInput style={[styles.input, styles.multiline]} value={motivation} onChangeText={setMotivation} multiline /><TouchableOpacity style={styles.primary} onPress={() => applyMutation.mutate()} disabled={applyMutation.isPending}><Text style={styles.primaryText}>{applyMutation.isPending ? 'Applying…' : 'Submit application'}</Text></TouchableOpacity></View>}
-    <Text style={styles.sectionTitle}>Open missions</Text>
-    {missions.data?.map((mission) => <View key={mission.id} style={styles.card}><View style={styles.cardTop}><Text style={styles.category}>{mission.category}</Text><Text style={styles.city}>{mission.city}</Text></View><Text style={styles.missionTitle}>{mission.title}</Text><Text style={styles.description}>{mission.description}</Text><Text style={styles.safety}>Safety: {mission.safetyNote}</Text>{profileStatus === 'active' || profileStatus === 'certified' ? <TouchableOpacity style={styles.secondary} onPress={() => setSelected(mission)}><Text style={styles.secondaryText}>Submit observation</Text></TouchableOpacity> : <Text style={styles.note}>Available after Explorer approval.</Text>}</View>)}
-    {selected ? <View style={styles.panel}><Text style={styles.sectionTitle}>Submission · {selected.title}</Text><TextInput style={[styles.input, styles.multiline]} value={submission} onChangeText={setSubmission} placeholder="Describe only what you observed…" multiline /><TouchableOpacity style={styles.primary} onPress={() => submitMutation.mutate()} disabled={submitMutation.isPending || submission.trim().length < 20}><Text style={styles.primaryText}>{submitMutation.isPending ? 'Submitting…' : 'Submit with optional GPS'}</Text></TouchableOpacity></View> : null}
-    {submissions.data?.length ? <Text style={styles.sectionTitle}>Your submissions</Text> : null}
-    {submissions.data?.map((item) => (
-      <View key={item.id} style={styles.card}>
-        <Text style={styles.category}>{item.status}</Text>
-        <Text style={styles.description}>{item.text}</Text>
-        {item.reviewerNote ? <Text style={styles.note}>Reviewer: {item.reviewerNote}</Text> : null}
-      </View>
-    ))}
-  </ScrollView>;
+
+  return (
+    <ScrollView
+      style={styles.screen}
+      contentContainerStyle={[styles.content, { paddingTop: spacing.md, paddingBottom: spacing.xxxl }]}
+    >
+      <Text style={styles.eyebrow}>PHASE 5 / EXPLORER PROGRAM</Text>
+      <Text style={styles.title}>Verify what travelers need.</Text>
+      <Text style={styles.subtitle}>
+        Missions produce reviewable evidence for places, events, and stays. Points never justify unsafe exploration.
+      </Text>
+      {profile.isLoading ? (
+        <View style={styles.panel}>
+          <ActivityIndicator color={colors.primary} />
+          <Text style={styles.note}>Loading Explorer status…</Text>
+        </View>
+      ) : null}
+      {profile.isError ? (
+        <View style={styles.panel}>
+          <Text style={styles.error}>Could not load Explorer profile.</Text>
+          <TouchableOpacity onPress={() => profile.refetch()}>
+            <Text style={styles.retry}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+      {profile.data ? (
+        <View style={styles.profile}>
+          <Text style={styles.profileTitle}>Explorer status · {profileStatus}</Text>
+          <Text style={styles.profileStats}>
+            {profile.data.missionsCompleted} missions · {profile.data.reputationPoints} reputation points
+          </Text>
+          <Text style={styles.note}>
+            Submissions require approval before they can become verified content.
+          </Text>
+          {activateMutation.isError ? (
+            <Text style={styles.error}>
+              {activateMutation.error instanceof Error ? activateMutation.error.message : 'Could not record briefing.'}
+            </Text>
+          ) : null}
+          {profileStatus === 'applicant' ? (
+            <TouchableOpacity
+              style={styles.primary}
+              onPress={() => activateMutation.mutate()}
+              disabled={activateMutation.isPending}
+            >
+              <Text style={styles.primaryText}>
+                {activateMutation.isPending ? 'Submitting…' : 'Complete safety briefing & request approval'}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
+          {profileStatus === 'pending_review' ? (
+            <Text style={styles.note}>
+              Safety briefing recorded. A staff reviewer must approve your profile before missions unlock.
+            </Text>
+          ) : null}
+        </View>
+      ) : profile.isLoading || profile.isError ? null : (
+        <View style={styles.panel}>
+          <Text style={styles.sectionTitle}>Apply to participate</Text>
+          <TextInput style={styles.input} value={city} onChangeText={setCity} placeholder="Corridor city" />
+          <TextInput
+            style={[styles.input, styles.multiline]}
+            value={motivation}
+            onChangeText={setMotivation}
+            multiline
+          />
+          {applyMutation.isError ? (
+            <Text style={styles.error}>
+              {applyMutation.error instanceof Error ? applyMutation.error.message : 'Could not apply.'}
+            </Text>
+          ) : null}
+          <TouchableOpacity
+            style={styles.primary}
+            onPress={() => applyMutation.mutate()}
+            disabled={applyMutation.isPending}
+          >
+            {applyMutation.isPending ? (
+              <ActivityIndicator color={colors.white} />
+            ) : (
+              <Text style={styles.primaryText}>Submit application</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      )}
+      <Text style={styles.sectionTitle}>Open missions</Text>
+      {missions.isLoading ? (
+        <View style={styles.panel}>
+          <ActivityIndicator color={colors.primary} />
+          <Text style={styles.note}>Loading missions…</Text>
+        </View>
+      ) : null}
+      {missions.isError ? (
+        <View style={styles.panel}>
+          <Text style={styles.error}>Could not load missions.</Text>
+          <TouchableOpacity onPress={() => missions.refetch()}>
+            <Text style={styles.retry}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+      {!missions.isLoading && !missions.isError && !(missions.data?.length) ? (
+        <Text style={styles.note}>No open missions yet. Check back after corridor coverage expands.</Text>
+      ) : null}
+      {missions.data?.map((mission) => (
+        <View key={mission.id} style={styles.card}>
+          <View style={styles.cardTop}>
+            <Text style={styles.category}>{mission.category}</Text>
+            <Text style={styles.city}>{mission.city}</Text>
+          </View>
+          <Text style={styles.missionTitle}>{mission.title}</Text>
+          <Text style={styles.description}>{mission.description}</Text>
+          <Text style={styles.safety}>Safety: {mission.safetyNote}</Text>
+          {profileStatus === 'active' || profileStatus === 'certified' ? (
+            <TouchableOpacity style={styles.secondary} onPress={() => setSelected(mission)}>
+              <Text style={styles.secondaryText}>Submit observation</Text>
+            </TouchableOpacity>
+          ) : (
+            <Text style={styles.note}>Available after Explorer approval.</Text>
+          )}
+        </View>
+      ))}
+      {selected ? (
+        <View style={styles.panel}>
+          <Text style={styles.sectionTitle}>Submission · {selected.title}</Text>
+          <TextInput
+            style={[styles.input, styles.multiline]}
+            value={submission}
+            onChangeText={setSubmission}
+            placeholder="Describe only what you observed…"
+            multiline
+          />
+          {submitMutation.isError ? (
+            <Text style={styles.error}>
+              {submitMutation.error instanceof Error ? submitMutation.error.message : 'Could not submit observation.'}
+            </Text>
+          ) : null}
+          <TouchableOpacity
+            style={styles.primary}
+            onPress={() => submitMutation.mutate()}
+            disabled={submitMutation.isPending || submission.trim().length < 20}
+          >
+            <Text style={styles.primaryText}>
+              {submitMutation.isPending ? 'Submitting…' : 'Submit with optional GPS'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+      {submissions.data?.length ? <Text style={styles.sectionTitle}>Your submissions</Text> : null}
+      {submissions.data?.map((item) => (
+        <View key={item.id} style={styles.card}>
+          <Text style={styles.category}>{item.status}</Text>
+          <Text style={styles.description}>{item.text}</Text>
+          {item.reviewerNote ? <Text style={styles.note}>Reviewer: {item.reviewerNote}</Text> : null}
+        </View>
+      ))}
+    </ScrollView>
+  );
 }
 
-const styles = StyleSheet.create({ screen: { flex: 1, backgroundColor: '#FBFAF6' }, content: { padding: 20, paddingBottom: 48, gap: 14 }, eyebrow: { color: '#8C3C29', fontSize: 10, fontWeight: '800', letterSpacing: 1.5 }, title: { color: '#1C2128', fontSize: 27, fontWeight: '800' }, subtitle: { color: '#687078', fontSize: 13, lineHeight: 19 }, profile: { backgroundColor: '#F1EAD6', borderRadius: 16, gap: 7, padding: 16 }, profileTitle: { color: '#6B5A2A', fontWeight: '800' }, profileStats: { color: '#6B5A2A', fontSize: 13 }, sectionTitle: { color: '#1C2128', fontSize: 17, fontWeight: '800' }, panel: { backgroundColor: '#fff', borderColor: '#E5E1D7', borderRadius: 16, borderWidth: 1, gap: 10, padding: 16 }, input: { backgroundColor: '#FBFAF6', borderColor: '#E5E1D7', borderRadius: 10, borderWidth: 1, color: '#1C2128', padding: 12 }, multiline: { minHeight: 80, textAlignVertical: 'top' }, primary: { alignItems: 'center', backgroundColor: '#1C2128', borderRadius: 11, paddingVertical: 13 }, primaryText: { color: '#fff', fontWeight: '800' }, card: { backgroundColor: '#fff', borderColor: '#E5E1D7', borderRadius: 16, borderWidth: 1, gap: 8, padding: 16 }, cardTop: { flexDirection: 'row', justifyContent: 'space-between' }, category: { color: '#8C3C29', fontSize: 10, fontWeight: '800', textTransform: 'uppercase' }, city: { color: '#687078', fontSize: 11 }, missionTitle: { color: '#1C2128', fontSize: 17, fontWeight: '800' }, description: { color: '#515963', fontSize: 13, lineHeight: 19 }, safety: { color: '#8C3C29', fontSize: 12, lineHeight: 17 }, note: { color: '#687078', fontSize: 11, lineHeight: 16 }, secondary: { alignItems: 'center', borderColor: '#1C2128', borderRadius: 10, borderWidth: 1, paddingVertical: 10 }, secondaryText: { color: '#1C2128', fontWeight: '800' } });
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: colors.background },
+  content: { paddingHorizontal: spacing.lg, gap: spacing.md },
+  eyebrow: {
+    color: colors.primary,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+  },
+  title: { color: colors.ink, fontSize: typography.fontSize.display, fontWeight: '800' },
+  subtitle: { color: colors.inkMuted, fontSize: typography.fontSize.body, lineHeight: 19 },
+  profile: {
+    backgroundColor: colors.goldSoft,
+    borderRadius: radii.lg,
+    gap: 7,
+    padding: spacing.lg,
+  },
+  profileTitle: { color: colors.goldDark, fontWeight: '800' },
+  profileStats: { color: colors.goldDark, fontSize: typography.fontSize.body },
+  sectionTitle: {
+    color: colors.ink,
+    fontSize: typography.fontSize.title2,
+    fontWeight: '800',
+  },
+  panel: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    gap: spacing.sm,
+    padding: spacing.lg,
+  },
+  input: {
+    backgroundColor: colors.background,
+    borderColor: colors.border,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    color: colors.ink,
+    padding: spacing.md,
+  },
+  multiline: { minHeight: 80, textAlignVertical: 'top' },
+  primary: {
+    alignItems: 'center',
+    backgroundColor: colors.ink,
+    borderRadius: radii.md,
+    paddingVertical: 13,
+  },
+  primaryText: { color: colors.white, fontWeight: '800' },
+  card: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    gap: spacing.sm,
+    padding: spacing.lg,
+  },
+  cardTop: { flexDirection: 'row', justifyContent: 'space-between' },
+  category: {
+    color: colors.primary,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  city: { color: colors.inkMuted, fontSize: typography.fontSize.caption },
+  missionTitle: {
+    color: colors.ink,
+    fontSize: typography.fontSize.title2,
+    fontWeight: '800',
+  },
+  description: {
+    color: colors.inkMuted,
+    fontSize: typography.fontSize.body,
+    lineHeight: 19,
+  },
+  safety: { color: colors.primary, fontSize: typography.fontSize.caption, lineHeight: 17 },
+  note: { color: colors.inkMuted, fontSize: typography.fontSize.caption, lineHeight: 16 },
+  error: {
+    color: colors.error,
+    backgroundColor: colors.errorBg,
+    padding: spacing.sm,
+    borderRadius: radii.sm,
+    fontSize: typography.fontSize.caption,
+  },
+  retry: { color: colors.primary, fontWeight: '800', fontSize: typography.fontSize.caption },
+  secondary: {
+    alignItems: 'center',
+    borderColor: colors.ink,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    paddingVertical: 10,
+  },
+  secondaryText: { color: colors.ink, fontWeight: '800' },
+});

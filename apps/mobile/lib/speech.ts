@@ -8,7 +8,7 @@ import {
 import * as Speech from 'expo-speech';
 
 /** Native TTS is already local; keep rate snappy and don't wait on a long paragraph. */
-const TTS_RATE = 1.22;
+const TTS_RATE = 1.28;
 
 /** PlayAndRecord for the whole call so TTS and the mic can overlap (barge-in). */
 export const CALL_AUDIO_MODE: Partial<AudioMode> = {
@@ -123,6 +123,11 @@ export function speakNow(text: string, language = 'en-IN', onEnd?: () => void) {
 
 export function stopSpeaking() {
   Speech.stop();
+}
+
+/** Prime the engine during connect so the first live sentence is not a cold start. */
+export function warmTts(language = 'en-IN') {
+  Speech.speak('\u200b', { language, pitch: 1, rate: TTS_RATE });
 }
 
 /** Queue a sentence without cutting the previous one. Barge-in still uses stopSpeaking(). */

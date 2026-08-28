@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ActivityIndicator, Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { getOfflineTrailPack, saveOfflineTrailPack } from '../../lib/offline-trails';
 import { getTrail, getTrailPackage, listTrails, type TrailDetail, type TrailPackage, type TrailSummary } from '../../lib/trails';
@@ -48,7 +47,6 @@ function RoutePreview({ trail }: { trail: TrailDetail }) {
 }
 
 export default function TrailsScreen() {
-  const insets = useSafeAreaInsets();
   const [trails, setTrails] = useState<TrailSummary[]>([]);
   const [selected, setSelected] = useState<TrailDetail | null>(null);
   const [emergencyNumbers, setEmergencyNumbers] = useState<TrailPackage['emergencyNumbers']>([]);
@@ -101,11 +99,30 @@ export default function TrailsScreen() {
   }
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={[styles.content, { paddingTop: insets.top + spacing.md, paddingBottom: spacing.xxxl }]}>
+    <ScrollView style={styles.screen} contentContainerStyle={[styles.content, { paddingTop: spacing.md, paddingBottom: spacing.xxxl }]}>
       <Text style={styles.eyebrow}>PHASE 5 · TRAILS</Text>
       <Text style={styles.title}>Offline Trail Packs</Text>
       <Text style={styles.subtitle}>Route manifests, waypoints, emergency contacts, and confidence labels for low-connectivity travel.</Text>
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      {error ? (
+        <View>
+          <Text style={styles.error}>{error}</Text>
+          {!selected ? (
+            <TouchableOpacity
+              style={styles.primary}
+              onPress={() => {
+                setError(null);
+                setLoading(true);
+                listTrails()
+                  .then(setTrails)
+                  .catch((caught) => setError(caught instanceof Error ? caught.message : 'Could not load trail catalog.'))
+                  .finally(() => setLoading(false));
+              }}
+            >
+              <Text style={styles.primaryText}>Retry catalog</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      ) : null}
       {selected ? (
         <View style={styles.panel}>
           <TouchableOpacity onPress={() => setSelected(null)}><Text style={styles.back}>‹ All trails</Text></TouchableOpacity>
@@ -121,7 +138,16 @@ export default function TrailsScreen() {
             <View>
               <Text style={styles.sectionTitle}>Emergency numbers in this pack</Text>
               {emergencyNumbers.map((item) => (
-                <Text key={item.number} style={styles.rowText}>{item.label}: {item.number} · {item.source}</Text>
+                <TouchableOpacity
+                  key={item.number}
+                  style={styles.emergencyRow}
+                  onPress={() => Linking.openURL(`tel:${item.number.replace(/\s+/g, '')}`)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.rowTitle}>{item.label}</Text>
+                  <Text style={styles.emergencyNumber}>{item.number}</Text>
+                  <Text style={styles.rowText}>{item.source} · Tap to dial</Text>
+                </TouchableOpacity>
               ))}
             </View>
           ) : null}
@@ -132,7 +158,12 @@ export default function TrailsScreen() {
         </View>
       ) : (
         <View style={styles.list}>
-          {loading ? <ActivityIndicator color={colors.primary} /> : null}
+          {loading ? (
+            <View>
+              <ActivityIndicator color={colors.primary} />
+              <Text style={styles.rowText}>Loading trail catalog…</Text>
+            </View>
+          ) : null}
           {!loading && !trails.length ? <Text style={styles.rowText}>No published or preview trails are available yet.</Text> : null}
           {trails.map((trail) => <TouchableOpacity key={trail.id} style={styles.card} onPress={() => openTrail(trail)} disabled={busy}>
             <View style={styles.cardTop}><Text style={styles.cardTitle}>{trail.name}</Text><Text style={styles.badge}>{trail.verificationStatus}</Text></View>
@@ -183,6 +214,17 @@ const styles = StyleSheet.create({
   row: { borderTopWidth: 1, borderTopColor: colors.borderLight, paddingTop: spacing.sm, gap: 3 },
   rowTitle: { color: colors.ink, fontSize: typography.fontSize.caption, fontWeight: '800', textTransform: 'capitalize' },
   rowText: { color: colors.inkMuted, fontSize: typography.fontSize.caption, lineHeight: 18 },
+  emergencyRow: {
+    borderTopWidth: 1,
+    borderTopColor: colors.borderLight,
+    paddingTop: spacing.sm,
+    gap: 2,
+  },
+  emergencyNumber: {
+    color: colors.primary,
+    fontSize: typography.fontSize.headline,
+    fontWeight: '800',
+  },
   hazard: { backgroundColor: colors.errorBg, padding: spacing.sm, borderRadius: radii.sm, gap: 3 },
   primary: { backgroundColor: colors.primary, borderRadius: radii.md, padding: spacing.md, alignItems: 'center', marginTop: spacing.sm },
   primaryText: { color: colors.white, fontWeight: '800' },

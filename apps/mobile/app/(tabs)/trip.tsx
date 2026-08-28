@@ -12,10 +12,56 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { createTrip, generateItinerary, getTripTimeline, addTripBooking, requestOnboardingCall, getOnboardingConfig } from '../../lib/trips';
-import { getOfflineTripPack, saveOfflineTripPack } from '../../lib/offline-trip';
+import {
+  addTripBooking,
+  approveAdaptivePlan,
+  createAdaptivePlan,
+  createTrip,
+  generateItinerary,
+  getTripTimeline,
+  listAdaptivePlans,
+  recordPlanFeedback,
+  updateTravelerProfile,
+  type AdaptivePlan,
+} from '../../lib/trips';
+import { saveOfflineTripPack } from '../../lib/offline-trip';
+import {
+  prefillFromHop,
+  prefillSearchParams,
+  stayPrefillFromDay,
+  type TripPrefill,
+} from '../../lib/trip-prefill';
 import { colors, radii, shadows, spacing, typography } from '../../lib/theme';
 import { useStore } from '../../store/useStore';
+import { useRouter } from 'expo-router';
+
+function openExplore(router: ReturnType<typeof useRouter>, city: string, place?: string) {
+  router.push({
+    pathname: '/(tabs)/explore',
+    params: place ? { city, q: place } : { city },
+  });
+}
+
+function openGuide(router: ReturnType<typeof useRouter>, city: string, place?: string) {
+  router.push({
+    pathname: '/(tabs)/guide',
+    params: place ? { city, place } : { city },
+  });
+}
+
+function openCompareHop(router: ReturnType<typeof useRouter>, seed: TripPrefill) {
+  router.push({
+    pathname: '/(tabs)/compare',
+    params: prefillSearchParams(seed),
+  });
+}
+
+function openBookingHop(router: ReturnType<typeof useRouter>, seed: TripPrefill) {
+  router.push({
+    pathname: '/services/booking',
+    params: prefillSearchParams(seed),
+  });
+}
 
 const BUDGET_LEVELS: Array<{
   id: 'backpacker' | 'comfort' | 'luxury' | 'mixed';
@@ -30,21 +76,48 @@ const BUDGET_LEVELS: Array<{
 ];
 
 const PRESET_CORRIDORS = [
-  'Delhi, Agra, Jaipur',
-  'Delhi, Varanasi',
-  'Jaipur, Udaipur, Jodhpur',
+  { id: 'gt', label: 'Golden Triangle', cities: 'Delhi, Agra, Jaipur' },
+  { id: 'dv', label: 'Delhi–Varanasi', cities: 'Delhi, Varanasi' },
+  { id: 'rj', label: 'Rajasthan loop', cities: 'Jaipur, Udaipur, Jodhpur' },
 ];
 
+function formatLocalDate(date: Date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function addDays(base: Date, days: number) {
+  const next = new Date(base);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
 function NewTripForm({ onCreated }: { onCreated: (tripId: string) => void }) {
+  const today = new Date();
   const [cities, setCities] = useState('Delhi, Agra, Jaipur');
-  const [startDate, setStartDate] = useState('2026-10-10');
-  const [endDate, setEndDate] = useState('2026-10-16');
+  const [startDate, setStartDate] = useState(formatLocalDate(addDays(today, 14)));
+  const [endDate, setEndDate] = useState(formatLocalDate(addDays(today, 20)));
   const [budgetLevel, setBudgetLevel] = useState<'backpacker' | 'comfort' | 'luxury' | 'mixed'>('backpacker');
+  const [interests, setInterests] = useState('history, food');
+  const [pace, setPace] = useState<'relaxed' | 'balanced' | 'packed'>('balanced');
   const [error, setError] = useState<string | null>(null);
 
   const createMutation = useMutation({
-    mutationFn: () =>
-      createTrip({
+    mutationFn: async () => {
+      await updateTravelerProfile({
+        interests: interests.split(',').map((item) => item.trim()).filter(Boolean),
+        pace,
+        transportPreferences: [],
+        walkingTolerance: 'medium',
+        wakeTime: '08:00',
+        sleepTime: '22:30',
+        travelParty: 'solo',
+        accessibility: [],
+        foodPreferences: [],
+      });
+      return createTrip({
         startDate,
         endDate,
         cities: cities
@@ -52,7 +125,8 @@ function NewTripForm({ onCreated }: { onCreated: (tripId: string) => void }) {
           .map((c) => c.trim())
           .filter(Boolean),
         budgetLevel,
-      }),
+      });
+    },
     onSuccess: (trip) => onCreated(trip.id),
     onError: (e) => setError(e instanceof Error ? e.message : 'Could not create trip'),
   });
@@ -85,15 +159,14 @@ function NewTripForm({ onCreated }: { onCreated: (tripId: string) => void }) {
 
         {/* Quick Presets */}
         <View style={styles.presetRow}>
-          <Text style={styles.presetLabel}>Presets:</Text>
           {PRESET_CORRIDORS.map((preset) => (
             <TouchableOpacity
-              key={preset}
-              style={[styles.presetChip, cities === preset && styles.presetChipActive]}
-              onPress={() => setCities(preset)}
+              key={preset.id}
+              style={[styles.presetChip, cities === preset.cities && styles.presetChipActive]}
+              onPress={() => setCities(preset.cities)}
             >
-              <Text style={cities === preset ? styles.presetTextActive : styles.presetText}>
-                {preset.split(',')[0]}...
+              <Text style={cities === preset.cities ? styles.presetTextActive : styles.presetText}>
+                {preset.label}
               </Text>
             </TouchableOpacity>
           ))}
@@ -112,6 +185,7 @@ function NewTripForm({ onCreated }: { onCreated: (tripId: string) => void }) {
               onChangeText={setStartDate}
               placeholder="YYYY-MM-DD"
               placeholderTextColor={colors.inkSubtle}
+              autoCapitalize="none"
             />
           </View>
         </View>
@@ -126,9 +200,32 @@ function NewTripForm({ onCreated }: { onCreated: (tripId: string) => void }) {
               onChangeText={setEndDate}
               placeholder="YYYY-MM-DD"
               placeholderTextColor={colors.inkSubtle}
+              autoCapitalize="none"
             />
           </View>
         </View>
+      </View>
+      <View style={styles.presetRow}>
+        <TouchableOpacity
+          style={styles.presetChip}
+          onPress={() => {
+            const start = addDays(new Date(), 7);
+            setStartDate(formatLocalDate(start));
+            setEndDate(formatLocalDate(addDays(start, 6)));
+          }}
+        >
+          <Text style={styles.presetText}>Next week · 7 days</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.presetChip}
+          onPress={() => {
+            const start = addDays(new Date(), 1);
+            setStartDate(formatLocalDate(start));
+            setEndDate(formatLocalDate(addDays(start, 3)));
+          }}
+        >
+          <Text style={styles.presetText}>Tomorrow · 3 days</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Budget Style Selection */}
@@ -161,6 +258,33 @@ function NewTripForm({ onCreated }: { onCreated: (tripId: string) => void }) {
         </View>
       </View>
 
+      <View style={styles.fieldSection}>
+        <Text style={styles.label}>What kind of experience do you want?</Text>
+        <View style={styles.inputWrapper}>
+          <Ionicons name="sparkles-outline" size={18} color={colors.inkMuted} style={styles.inputIcon} />
+          <TextInput
+            style={styles.input}
+            value={interests}
+            onChangeText={setInterests}
+            placeholder="history, food, nature"
+            placeholderTextColor={colors.inkSubtle}
+          />
+        </View>
+        <View style={styles.presetRow}>
+          {(['relaxed', 'balanced', 'packed'] as const).map((option) => (
+            <TouchableOpacity
+              key={option}
+              style={[styles.presetChip, pace === option && styles.presetChipActive]}
+              onPress={() => setPace(option)}
+            >
+              <Text style={pace === option ? styles.presetTextActive : styles.presetText}>
+                {option === 'relaxed' ? 'Relaxed' : option === 'packed' ? 'Packed' : 'Balanced'} pace
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </View>
+
       {error ? (
         <View style={styles.errorBanner}>
           <Ionicons name="alert-circle" size={16} color={colors.error} />
@@ -188,26 +312,47 @@ function NewTripForm({ onCreated }: { onCreated: (tripId: string) => void }) {
 }
 
 function ItineraryView({ tripId, onStartOver }: { tripId: string; onStartOver: () => void }) {
+  const router = useRouter();
   const queryClient = useQueryClient();
   const [bookingTitle, setBookingTitle] = useState('');
   const [bookingProvider, setBookingProvider] = useState('IRCTC');
+  const [showAddBooking, setShowAddBooking] = useState(false);
   const [offlineSavedAt, setOfflineSavedAt] = useState<string | null>(null);
-  const [phoneNumber, setPhoneNumber] = useState('');
-  const [callConsent, setCallConsent] = useState(false);
 
   const timelineQuery = useQuery({
     queryKey: ['tripTimeline', tripId],
     queryFn: () => getTripTimeline(tripId),
   });
-  const onboardingConfig = useQuery({
-    queryKey: ['onboardingConfig'],
-    queryFn: getOnboardingConfig,
+
+  const plansQuery = useQuery({
+    queryKey: ['adaptivePlans', tripId],
+    queryFn: () => listAdaptivePlans(tripId),
   });
 
   const generateMutation = useMutation({
     mutationFn: () => generateItinerary(tripId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tripTimeline', tripId] });
+    },
+  });
+
+  const adaptiveMutation = useMutation({
+    mutationFn: () => createAdaptivePlan(tripId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['adaptivePlans', tripId] });
+      queryClient.invalidateQueries({ queryKey: ['tripTimeline', tripId] });
+    },
+  });
+
+  const approveMutation = useMutation({
+    mutationFn: (plan: AdaptivePlan) => approveAdaptivePlan(tripId, plan.id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['adaptivePlans', tripId] }),
+  });
+
+  const feedbackMutation = useMutation({
+    mutationFn: (itemKey: string) => {
+      if (!adaptivePlan) throw new Error('No adaptive plan loaded');
+      return recordPlanFeedback(tripId, adaptivePlan.id, { itemKey, action: 'reject', reason: 'Not a fit for this traveler' });
     },
   });
 
@@ -225,22 +370,40 @@ function ItineraryView({ tripId, onStartOver }: { tripId: string; onStartOver: (
       }),
     onSuccess: () => {
       setBookingTitle('');
+      setShowAddBooking(false);
       queryClient.invalidateQueries({ queryKey: ['tripTimeline', tripId] });
     },
   });
 
-  const callMutation = useMutation({
-    mutationFn: () =>
-      requestOnboardingCall({
-        phoneNumber: phoneNumber.trim(),
-        callConsent: true,
-        recordingConsent: false,
-      }),
-  });
-
   const trip = timelineQuery.data?.trip;
-  const days = timelineQuery.data?.days ?? [];
+  const adaptivePlan = plansQuery.data?.[0];
+  const days = adaptivePlan?.days ?? timelineQuery.data?.days ?? [];
   const bookings = timelineQuery.data?.bookings ?? [];
+
+  if (timelineQuery.isLoading) {
+    return (
+      <View style={styles.emptyState}>
+        <ActivityIndicator color={colors.primary} size="large" />
+        <Text style={styles.emptyTitle}>Loading your journey</Text>
+        <Text style={styles.emptySubtitle}>Fetching itinerary and saved bookings…</Text>
+      </View>
+    );
+  }
+
+  if (timelineQuery.isError && !timelineQuery.data) {
+    return (
+      <View style={styles.emptyState}>
+        <Ionicons name="cloud-offline-outline" size={32} color={colors.error} />
+        <Text style={styles.emptyTitle}>Could not load this trip</Text>
+        <Text style={styles.emptySubtitle}>
+          {timelineQuery.error instanceof Error ? timelineQuery.error.message : 'Check your connection and try again.'}
+        </Text>
+        <TouchableOpacity style={styles.primaryButton} onPress={() => timelineQuery.refetch()}>
+          <Text style={styles.primaryButtonText}>Retry</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.itineraryContainer}>
@@ -295,13 +458,69 @@ function ItineraryView({ tripId, onStartOver }: { tripId: string; onStartOver: (
             </View>
           )}
         </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.secondaryOutline, adaptiveMutation.isPending && styles.buttonDisabled]}
+          onPress={() => adaptiveMutation.mutate()}
+          disabled={adaptiveMutation.isPending}
+          activeOpacity={0.85}
+        >
+          {adaptiveMutation.isPending ? (
+            <ActivityIndicator color={colors.primary} />
+          ) : (
+            <View style={styles.btnInner}>
+              <Ionicons name="sparkles-outline" size={16} color={colors.primary} style={{ marginRight: 6 }} />
+              <Text style={styles.secondaryOutlineText}>
+                {adaptivePlan ? 'Regenerate personalized draft' : 'Generate personalized draft'}
+              </Text>
+            </View>
+          )}
+        </TouchableOpacity>
       </View>
+
+      {adaptivePlan ? (
+        <View style={styles.formCard}>
+          <View style={styles.routeHeaderTop}>
+            <Text style={styles.label}>Personalized itinerary · v{adaptivePlan.version}</Text>
+            <Text style={styles.routeMetaText}>{adaptivePlan.status.replaceAll('_', ' ')}</Text>
+          </View>
+          <Text style={styles.formSubtitle}>
+            {adaptivePlan.validation.fallbackUsed
+              ? 'Grounded fallback used. Review the plan before booking.'
+              : 'Built from your preferences, published destination knowledge, and validated schedule rules.'}
+          </Text>
+          {adaptivePlan.status !== 'approved' ? (
+            <TouchableOpacity
+              style={[styles.primaryButton, approveMutation.isPending && styles.buttonDisabled]}
+              onPress={() => approveMutation.mutate(adaptivePlan)}
+              disabled={approveMutation.isPending}
+            >
+              {approveMutation.isPending ? <ActivityIndicator color={colors.white} /> : <Text style={styles.primaryButtonText}>Approve this itinerary</Text>}
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.kbBadge}>
+              <Ionicons name="checkmark-circle" size={13} color={colors.sage} />
+              <Text style={styles.kbBadgeText}>APPROVED FOR BOOKING</Text>
+            </View>
+          )}
+        </View>
+      ) : null}
 
       <View style={styles.formCard}>
         <Text style={styles.label}>Journey bookings</Text>
         <Text style={styles.formSubtitle}>
-          Save a hand-off you already booked elsewhere. Zentrip does not invent live tickets.
+          Open official hotel, cab, and flight sites. Save a booking here only after you complete it there — search
+          results are not bookings.
         </Text>
+        <TouchableOpacity
+          style={styles.primaryButton}
+          onPress={() => router.push('/services/booking')}
+          activeOpacity={0.85}
+        >
+          <View style={styles.btnInner}>
+            <Ionicons name="car-outline" size={16} color={colors.white} style={{ marginRight: 6 }} />
+            <Text style={styles.primaryButtonText}>Book hotels, cabs & flights</Text>
+          </View>
+        </TouchableOpacity>
         {bookings.map((booking) => (
           <View key={booking.id} style={styles.activityCard}>
             <Text style={styles.activityPlace}>{booking.title}</Text>
@@ -310,29 +529,40 @@ function ItineraryView({ tripId, onStartOver }: { tripId: string; onStartOver: (
             </Text>
           </View>
         ))}
-        <TextInput
-          style={styles.input}
-          value={bookingTitle}
-          onChangeText={setBookingTitle}
-          placeholder="Delhi → Agra Shatabdi"
-          placeholderTextColor={colors.inkSubtle}
-        />
-        <TextInput
-          style={styles.input}
-          value={bookingProvider}
-          onChangeText={setBookingProvider}
-          placeholder="Provider (IRCTC, RedBus, hotel)"
-          placeholderTextColor={colors.inkSubtle}
-        />
+        {!showAddBooking ? (
+          <TouchableOpacity style={styles.secondaryOutline} onPress={() => setShowAddBooking(true)}>
+            <Text style={styles.secondaryOutlineText}>Log a completed booking</Text>
+          </TouchableOpacity>
+        ) : (
+          <>
+            <TextInput
+              style={styles.input}
+              value={bookingTitle}
+              onChangeText={setBookingTitle}
+              placeholder="Delhi → Agra Shatabdi"
+              placeholderTextColor={colors.inkSubtle}
+            />
+            <TextInput
+              style={styles.input}
+              value={bookingProvider}
+              onChangeText={setBookingProvider}
+              placeholder="Provider (IRCTC, RedBus, hotel)"
+              placeholderTextColor={colors.inkSubtle}
+            />
+            <TouchableOpacity
+              style={[styles.primaryButton, (!bookingTitle.trim() || bookingMutation.isPending) && styles.buttonDisabled]}
+              onPress={() => bookingMutation.mutate()}
+              disabled={!bookingTitle.trim() || bookingMutation.isPending}
+            >
+              <Text style={styles.primaryButtonText}>Save to timeline</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setShowAddBooking(false)}>
+              <Text style={styles.startOverText}>Cancel</Text>
+            </TouchableOpacity>
+          </>
+        )}
         <TouchableOpacity
-          style={[styles.primaryButton, (!bookingTitle.trim() || bookingMutation.isPending) && styles.buttonDisabled]}
-          onPress={() => bookingMutation.mutate()}
-          disabled={!bookingTitle.trim() || bookingMutation.isPending}
-        >
-          <Text style={styles.primaryButtonText}>Add booking to timeline</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.primaryButton}
+          style={styles.secondaryOutline}
           onPress={async () => {
             const timeline = timelineQuery.data;
             if (!timeline) return;
@@ -340,57 +570,22 @@ function ItineraryView({ tripId, onStartOver }: { tripId: string; onStartOver: (
             setOfflineSavedAt(cachedAt);
           }}
         >
-          <Text style={styles.primaryButtonText}>
-            {offlineSavedAt ? `Offline pack saved · ${new Date(offlineSavedAt).toLocaleString()}` : 'Download trip for offline'}
+          <Text style={styles.secondaryOutlineText}>
+            {offlineSavedAt
+              ? `Offline pack ready · ${new Date(offlineSavedAt).toLocaleString()}`
+              : 'Download trip for offline'}
           </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.primaryButton}
-          onPress={async () => {
-            const pack = await getOfflineTripPack(tripId);
-            if (pack) setOfflineSavedAt(pack.cachedAt);
-          }}
-        >
-          <Text style={styles.primaryButtonText}>Check offline pack</Text>
         </TouchableOpacity>
       </View>
 
-      <View style={styles.formCard}>
-        <Text style={styles.label}>Optional AI onboarding call</Text>
-        <Text style={styles.formSubtitle}>
-          {onboardingConfig.data?.ready
-            ? 'Twilio is configured. The call is not recorded. Consent is required before we place it.'
-            : `Not ready yet. Set ${onboardingConfig.data?.missing.join(', ') || 'TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, PUBLIC_BASE_URL'} on the API, then expose HTTPS via a tunnel so Twilio can reach the callbacks.`}
-        </Text>
-        <TextInput
-          style={styles.input}
-          value={phoneNumber}
-          onChangeText={setPhoneNumber}
-          placeholder="+14155550123"
-          keyboardType="phone-pad"
-          placeholderTextColor={colors.inkSubtle}
-        />
-        <TouchableOpacity onPress={() => setCallConsent((value) => !value)}>
-          <Text style={styles.formSubtitle}>{callConsent ? 'Consent given' : 'Tap to consent to an AI-placed call'}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.primaryButton, (!callConsent || phoneNumber.trim().length < 8 || callMutation.isPending || onboardingConfig.data?.ready === false) && styles.buttonDisabled]}
-          disabled={!callConsent || phoneNumber.trim().length < 8 || callMutation.isPending || onboardingConfig.data?.ready === false}
-          onPress={() => callMutation.mutate()}
-        >
-          <Text style={styles.primaryButtonText}>
-            {callMutation.isSuccess
-              ? `Call ${callMutation.data.status}`
-              : onboardingConfig.data?.ready === false
-                ? 'Twilio not configured'
-                : 'Request onboarding call'}
-          </Text>
-        </TouchableOpacity>
-        {callMutation.isError ? (
-          <Text style={styles.errorText}>
-            {callMutation.error instanceof Error ? callMutation.error.message : 'Call could not be placed'}
-          </Text>
-        ) : null}
+      <View style={styles.emergencyCard}>
+        <Text style={styles.label}>Emergency (works offline)</Text>
+        <Text style={styles.formSubtitle}>112 national emergency · 1363 tourist helpline</Text>
+        <View style={styles.emergencyRow}>
+          <TouchableOpacity style={styles.emergencyBtn} onPress={() => router.push('/(tabs)/guardian')}>
+            <Text style={styles.emergencyBtnText}>Open Guardian</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {generateMutation.isError ? (
@@ -398,6 +593,15 @@ function ItineraryView({ tripId, onStartOver }: { tripId: string; onStartOver: (
           <Ionicons name="alert-circle" size={16} color={colors.error} />
           <Text style={styles.errorText}>
             {generateMutation.error instanceof Error ? generateMutation.error.message : 'Generation failed'}
+          </Text>
+        </View>
+      ) : null}
+
+      {adaptiveMutation.isError ? (
+        <View style={styles.errorBanner}>
+          <Ionicons name="alert-circle" size={16} color={colors.error} />
+          <Text style={styles.errorText}>
+            {adaptiveMutation.error instanceof Error ? adaptiveMutation.error.message : 'Personalized planning failed'}
           </Text>
         </View>
       ) : null}
@@ -413,7 +617,10 @@ function ItineraryView({ tripId, onStartOver }: { tripId: string; onStartOver: (
 
       {/* Day by Day Cards */}
       <View style={styles.timelineList}>
-        {days.map((day) => (
+        {days.map((day, dayIndex) => {
+          const hop = prefillFromHop(days, dayIndex, trip?.budgetLevel);
+          const staySeed = hop ? null : stayPrefillFromDay(days, dayIndex, trip?.budgetLevel);
+          return (
           <View key={day.day} style={styles.dayCard}>
             {/* Day Header */}
             <View style={styles.dayHeader}>
@@ -422,6 +629,65 @@ function ItineraryView({ tripId, onStartOver }: { tripId: string; onStartOver: (
               </View>
               <Text style={styles.dayCity}>{day.city}</Text>
               <Text style={styles.dayDate}>{day.date}</Text>
+            </View>
+            <View style={styles.dayActions}>
+              <TouchableOpacity
+                style={styles.dayActionChip}
+                onPress={() => openExplore(router, day.city)}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="sparkles-outline" size={13} color={colors.primary} />
+                <Text style={styles.dayActionText}>Explore {day.city}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.dayActionChip}
+                onPress={() => openGuide(router, day.city)}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="camera-outline" size={13} color={colors.primary} />
+                <Text style={styles.dayActionText}>Heritage Lens</Text>
+              </TouchableOpacity>
+              {hop ? (
+                <>
+                  <TouchableOpacity
+                    style={styles.dayActionChip}
+                    onPress={() => openCompareHop(router, hop)}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="git-compare-outline" size={13} color={colors.primary} />
+                    <Text style={styles.dayActionText}>
+                      Compare {hop.origin} → {hop.destination}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.dayActionChip}
+                    onPress={() => openBookingHop(router, hop)}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="open-outline" size={13} color={colors.primary} />
+                    <Text style={styles.dayActionText}>Book this hop</Text>
+                  </TouchableOpacity>
+                </>
+              ) : staySeed ? (
+                <>
+                  <TouchableOpacity
+                    style={styles.dayActionChip}
+                    onPress={() => openCompareHop(router, staySeed)}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="bed-outline" size={13} color={colors.primary} />
+                    <Text style={styles.dayActionText}>Compare stays in {day.city}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.dayActionChip}
+                    onPress={() => openBookingHop(router, staySeed)}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="open-outline" size={13} color={colors.primary} />
+                    <Text style={styles.dayActionText}>Book stays in {day.city}</Text>
+                  </TouchableOpacity>
+                </>
+              ) : null}
             </View>
 
             {/* Activities Vertical Timeline */}
@@ -442,12 +708,42 @@ function ItineraryView({ tripId, onStartOver }: { tripId: string; onStartOver: (
                       </View>
                     </View>
                     <Text style={styles.activityReason}>{activity.reason}</Text>
+                    <View style={styles.placeActions}>
+                      <TouchableOpacity
+                        style={styles.placeAction}
+                        onPress={() => openExplore(router, day.city, activity.placeName)}
+                        activeOpacity={0.85}
+                      >
+                        <Ionicons name="sparkles-outline" size={12} color={colors.primary} />
+                        <Text style={styles.placeActionText}>Explore</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.placeAction}
+                        onPress={() => openGuide(router, day.city, activity.placeName)}
+                        activeOpacity={0.85}
+                      >
+                        <Ionicons name="camera-outline" size={12} color={colors.primary} />
+                        <Text style={styles.placeActionText}>Open Lens</Text>
+                      </TouchableOpacity>
+                      {adaptivePlan ? (
+                        <TouchableOpacity
+                          style={styles.placeAction}
+                          onPress={() => feedbackMutation.mutate(`${day.day}:${activity.placeId ?? activity.placeName}`)}
+                          disabled={feedbackMutation.isPending}
+                          activeOpacity={0.85}
+                        >
+                          <Ionicons name="thumbs-down-outline" size={12} color={colors.primary} />
+                          <Text style={styles.placeActionText}>Not for me</Text>
+                        </TouchableOpacity>
+                      ) : null}
+                    </View>
                   </View>
                 </View>
               ))}
             </View>
           </View>
-        ))}
+          );
+        })}
 
         {!days.length && !generateMutation.isPending ? (
           <View style={styles.emptyState}>
@@ -503,10 +799,10 @@ const styles = StyleSheet.create({
 
   formCard: {
     backgroundColor: colors.card,
-    borderRadius: radii.xl,
+    borderRadius: radii.xxl,
     padding: spacing.xl,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: colors.borderLight,
     gap: spacing.md,
     ...shadows.md,
   },
@@ -735,6 +1031,42 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSize.caption,
     fontWeight: '700',
   },
+  secondaryOutline: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    paddingVertical: spacing.md,
+    alignItems: 'center',
+    backgroundColor: colors.cardWarm,
+  },
+  secondaryOutlineText: {
+    color: colors.ink,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '700',
+  },
+  emergencyCard: {
+    backgroundColor: colors.errorBg,
+    borderRadius: radii.xl,
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: '#E5B6AA',
+    gap: spacing.sm,
+  },
+  emergencyRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  emergencyBtn: {
+    backgroundColor: colors.error,
+    borderRadius: radii.md,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+  },
+  emergencyBtnText: {
+    color: colors.white,
+    fontWeight: '800',
+    fontSize: typography.fontSize.caption,
+  },
   routeTitle: {
     color: colors.white,
     fontSize: typography.fontSize.display,
@@ -858,6 +1190,42 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSize.caption,
     fontWeight: '700',
     color: colors.ink,
+    flex: 1,
+    paddingRight: spacing.xs,
+  },
+  dayActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+  },
+  dayActionChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: colors.primarySoft,
+    borderRadius: radii.full,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 5,
+  },
+  dayActionText: {
+    color: colors.primary,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '800',
+  },
+  placeActions: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  placeAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  placeActionText: {
+    color: colors.primary,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '800',
   },
   kbBadge: {
     flexDirection: 'row',

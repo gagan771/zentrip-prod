@@ -22,13 +22,13 @@ import { getDeviceLocation, type DeviceCoords } from '../../../lib/webview-geolo
 type DraftItem = { id: string; name: string };
 
 const ESSENTIAL_PRESETS = [
-  '💧 Packaged Mineral Water',
-  '🧴 Odomos Mosquito Spray',
-  '⚡ Electral ORS Sachets',
-  '🔌 Universal Plug Adapter',
-  '🧻 Sanitizing Hand Wipes',
-  '🩹 First Aid & Bandages',
-  '🧴 Sunscreen SPF 50',
+  'Packaged mineral water',
+  'Odomos mosquito spray',
+  'Electral ORS sachets',
+  'Universal plug adapter',
+  'Sanitizing hand wipes',
+  'First aid bandages',
+  'Sunscreen SPF 50',
 ];
 
 export default function GroceryServiceScreen() {
@@ -76,15 +76,17 @@ export default function GroceryServiceScreen() {
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
-        <View style={styles.badgeRow}>
-          <Ionicons name="flash-outline" size={12} color={colors.primary} />
-          <Text style={styles.eyebrow}>10-MINUTE QUICK COMMERCE</Text>
-        </View>
-        <Text style={styles.title}>Travel Essentials Handoff</Text>
+      <View style={styles.header}>
         <Text style={styles.subtitle}>
-          Add what you need, then export into Blinkit, Zepto, Swiggy Instamart, Flipkart Minutes, BigBasket, DMart, JioMart, Licious, or FreshToHome.
+          Add what you need, then open Blinkit, Zepto, Instamart, or Flipkart Minutes to finish checkout on their site.
         </Text>
+        <View style={styles.coverageTip}>
+          <Ionicons name="information-circle-outline" size={14} color={colors.sage} />
+          <Text style={styles.coverageTipText}>
+            Quick commerce is strongest in Delhi–NCR. In Agra and Jaipur, check each app for coverage before relying on
+            10-minute delivery.
+          </Text>
+        </View>
       </View>
 
       {/* Input Bar */}
@@ -156,7 +158,9 @@ export default function GroceryServiceScreen() {
       <View style={[styles.providerStrip, { paddingBottom: insets.bottom + spacing.sm }]}>
         <View style={styles.providerStripHeader}>
           <Ionicons name="open-outline" size={14} color={colors.primary} />
-          <Text style={styles.providerStripTitle}>SELECT DELIVERY PLATFORM</Text>
+          <Text style={styles.providerStripTitle}>
+            {items.length === 0 ? 'ADD ITEMS, THEN OPEN A PLATFORM' : `OPEN A PLATFORM · ${items.length} ITEM${items.length === 1 ? '' : 'S'}`}
+          </Text>
         </View>
         <View style={styles.adapterButtonsRow}>
           {GROCERY_ADAPTERS.map(({ key, Component }) => (
@@ -182,36 +186,29 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
     paddingBottom: spacing.sm,
-    gap: 4,
-  },
-  badgeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: colors.primarySoft,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 3,
-    borderRadius: radii.full,
-    alignSelf: 'flex-start',
-    marginBottom: 2,
-  },
-  eyebrow: {
-    color: colors.primary,
-    fontSize: typography.fontSize.micro,
-    fontWeight: '800',
-    letterSpacing: 1.2,
-  },
-  title: {
-    fontSize: typography.fontSize.hero,
-    fontWeight: '800',
-    color: colors.ink,
-    letterSpacing: -0.4,
+    gap: spacing.sm,
   },
   subtitle: {
     fontSize: typography.fontSize.caption,
     color: colors.inkMuted,
     lineHeight: 18,
+  },
+  coverageTip: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.xs,
+    backgroundColor: colors.sageSoft,
+    borderRadius: radii.md,
+    padding: spacing.md,
+  },
+  coverageTipText: {
+    flex: 1,
+    fontSize: typography.fontSize.micro,
+    color: colors.sageDark,
+    lineHeight: 15,
+    fontWeight: '600',
   },
 
   inputRow: {

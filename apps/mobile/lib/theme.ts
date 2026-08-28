@@ -27,6 +27,13 @@ export const colors = {
   sageSoft: '#EDF4EF',
   sageMuted: '#8EAA99',
 
+  // Meadow (Zenny live scene)
+  sky: '#C5DFF0',
+  skyWarm: '#E7F2C9',
+  grass: '#3F7A45',
+  grassDeep: '#2A542F',
+  grassBright: '#6BA85A',
+
   // Sand / Paper
   sand: '#EDE5D5',
   sandLight: '#F5EFE4',

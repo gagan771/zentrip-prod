@@ -74,7 +74,7 @@ export const useStore = create<ZentripState>()(
       travelerPreferences: {
         pace: 'balanced',
         budget: 'backpacker',
-        interests: ['Culture', 'Food'],
+        interests: ['Culture & Heritage', 'Street Food & Dining'],
       },
       setTravelerPreferences: (preferences) =>
         set((state) => ({ travelerPreferences: { ...state.travelerPreferences, ...preferences } })),

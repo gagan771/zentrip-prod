@@ -1,31 +1,253 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { useRouter } from 'expo-router';
 
 import { createExpertCase, getAvailableExperts, getExpertCases } from '../../lib/experts';
+import { colors, radii, spacing, typography } from '../../lib/theme';
+
+const CITIES = ['Delhi', 'Agra', 'Jaipur'];
 
 export default function ExpertsScreen() {
-  const insets = useSafeAreaInsets();
+  const router = useRouter();
   const client = useQueryClient();
   const [city, setCity] = useState('Jaipur');
   const [question, setQuestion] = useState('');
   const [category, setCategory] = useState('local_advice');
   const cases = useQuery({ queryKey: ['expert-cases'], queryFn: getExpertCases });
   const experts = useQuery({ queryKey: ['available-experts', city], queryFn: () => getAvailableExperts(city) });
-  const mutation = useMutation({ mutationFn: () => createExpertCase({ city, category, question }), onSuccess: () => { setQuestion(''); client.invalidateQueries({ queryKey: ['expert-cases'] }); } });
-  return <ScrollView style={styles.screen} contentContainerStyle={[styles.content, { paddingTop: insets.top + 20 }]}>
-    <Text style={styles.eyebrow}>PHASE 5 / LOCAL EXPERTS</Text><Text style={styles.title}>Ask a human when judgment matters.</Text><Text style={styles.subtitle}>Experts support local context and disputed content. They are not emergency responders—use Guardian for emergencies.</Text>
-    <View style={styles.panel}><Text style={styles.label}>What do you need help with?</Text><View style={styles.chips}>{['local_advice', 'community_report', 'content_dispute', 'non_emergency_safety'].map((item) => <TouchableOpacity key={item} style={[styles.chip, category === item && styles.chipActive]} onPress={() => setCategory(item)}><Text style={category === item ? styles.chipActiveText : styles.chipText}>{item.replace('_', ' ')}</Text></TouchableOpacity>)}</View><TextInput style={styles.input} value={city} onChangeText={setCity} placeholder="City" /><TextInput style={[styles.input, styles.multiline]} value={question} onChangeText={setQuestion} multiline placeholder="Describe the question with context…" /><TouchableOpacity style={styles.primary} onPress={() => mutation.mutate()} disabled={mutation.isPending || question.trim().length < 10}><Text style={styles.primaryText}>{mutation.isPending ? 'Sending…' : 'Ask local expert'}</Text></TouchableOpacity></View>
-    <Text style={styles.sectionTitle}>Available corridor experts</Text>
-    {experts.data?.map((item) => (
-      <View key={item.id} style={styles.card}>
-        <Text style={styles.question}>{item.displayName} · {item.city}</Text>
-        <Text style={styles.note}>{item.specialties.join(' · ')} · rating {item.rating}</Text>
+  const mutation = useMutation({
+    mutationFn: () => createExpertCase({ city, category, question }),
+    onSuccess: () => {
+      setQuestion('');
+      client.invalidateQueries({ queryKey: ['expert-cases'] });
+    },
+  });
+
+  return (
+    <ScrollView
+      style={styles.screen}
+      contentContainerStyle={[styles.content, { paddingTop: spacing.md, paddingBottom: spacing.xxxl }]}
+    >
+      <Text style={styles.eyebrow}>PHASE 5 / LOCAL EXPERTS</Text>
+      <Text style={styles.title}>Ask a human when judgment matters.</Text>
+      <Text style={styles.subtitle}>
+        Experts support local context and disputed content. They are not emergency responders—use Guardian for emergencies.
+      </Text>
+      <View style={styles.panel}>
+        <Text style={styles.label}>What do you need help with?</Text>
+        <View style={styles.chips}>
+          {['local_advice', 'community_report', 'content_dispute', 'non_emergency_safety'].map((item) => (
+            <TouchableOpacity
+              key={item}
+              style={[styles.chip, category === item && styles.chipActive]}
+              onPress={() => setCategory(item)}
+            >
+              <Text style={category === item ? styles.chipActiveText : styles.chipText}>
+                {item.replaceAll('_', ' ')}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <View style={styles.chips}>
+          {CITIES.map((item) => (
+            <TouchableOpacity
+              key={item}
+              style={[styles.chip, city === item && styles.chipActive]}
+              onPress={() => setCity(item)}
+            >
+              <Text style={city === item ? styles.chipActiveText : styles.chipText}>{item}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <TextInput style={styles.input} value={city} onChangeText={setCity} placeholder="City" placeholderTextColor={colors.inkSubtle} />
+        <TextInput
+          style={[styles.input, styles.multiline]}
+          value={question}
+          onChangeText={setQuestion}
+          multiline
+          placeholder="Describe the question with context…"
+          placeholderTextColor={colors.inkSubtle}
+        />
+        {mutation.isError ? (
+          <Text style={styles.error}>
+            {mutation.error instanceof Error ? mutation.error.message : 'Could not send that question.'}
+          </Text>
+        ) : null}
+        <TouchableOpacity
+          style={styles.primary}
+          onPress={() => mutation.mutate()}
+          disabled={mutation.isPending || question.trim().length < 10}
+        >
+          {mutation.isPending ? (
+            <ActivityIndicator color={colors.white} />
+          ) : (
+            <Text style={styles.primaryText}>Ask local expert</Text>
+          )}
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => router.push('/(tabs)/guardian')}>
+          <Text style={styles.guardianLink}>Emergency? Open Guardian instead</Text>
+        </TouchableOpacity>
       </View>
-    ))}
-    <Text style={styles.sectionTitle}>Your cases</Text>{cases.data?.map((item) => <View key={item.id} style={styles.card}><View style={styles.cardTop}><Text style={styles.status}>{item.status}</Text><Text style={styles.city}>{item.city}</Text></View><Text style={styles.question}>{item.question}</Text>{item.response ? <Text style={styles.response}>Local Expert: {item.response}</Text> : <Text style={styles.note}>Waiting for an available expert.</Text>}</View>)}
-  </ScrollView>;
+      <Text style={styles.sectionTitle}>Available corridor experts</Text>
+      {experts.isLoading ? (
+        <View style={styles.stateBox}>
+          <ActivityIndicator color={colors.primary} />
+          <Text style={styles.note}>Loading experts in {city}…</Text>
+        </View>
+      ) : null}
+      {experts.isError ? (
+        <View style={styles.stateBox}>
+          <Text style={styles.error}>Could not load experts. Check your network.</Text>
+          <TouchableOpacity onPress={() => experts.refetch()}>
+            <Text style={styles.guardianLink}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+      {!experts.isLoading && !experts.isError && !(experts.data?.length) ? (
+        <Text style={styles.note}>No listed experts for {city} yet. You can still send a case.</Text>
+      ) : null}
+      {experts.data?.map((item) => (
+        <View key={item.id} style={styles.card}>
+          <Text style={styles.question}>
+            {item.displayName} · {item.city}
+          </Text>
+          <Text style={styles.note}>
+            {item.specialties.join(' · ')} · rating {item.rating}
+          </Text>
+        </View>
+      ))}
+      <Text style={styles.sectionTitle}>Your cases</Text>
+      {cases.isLoading ? (
+        <View style={styles.stateBox}>
+          <ActivityIndicator color={colors.primary} />
+          <Text style={styles.note}>Loading your cases…</Text>
+        </View>
+      ) : null}
+      {cases.isError ? (
+        <View style={styles.stateBox}>
+          <Text style={styles.error}>Could not load cases.</Text>
+          <TouchableOpacity onPress={() => cases.refetch()}>
+            <Text style={styles.guardianLink}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+      {!cases.isLoading && !cases.isError && !(cases.data?.length) ? (
+        <Text style={styles.note}>No cases yet. Ask above when a human should review something the app cannot.</Text>
+      ) : null}
+      {cases.data?.map((item) => (
+        <View key={item.id} style={styles.card}>
+          <View style={styles.cardTop}>
+            <Text style={styles.status}>{item.status}</Text>
+            <Text style={styles.city}>{item.city}</Text>
+          </View>
+          <Text style={styles.question}>{item.question}</Text>
+          {item.response ? (
+            <Text style={styles.response}>Local Expert: {item.response}</Text>
+          ) : (
+            <Text style={styles.note}>Waiting for an available expert.</Text>
+          )}
+        </View>
+      ))}
+    </ScrollView>
+  );
 }
 
-const styles = StyleSheet.create({ screen: { flex: 1, backgroundColor: '#FBFAF6' }, content: { padding: 20, paddingBottom: 48, gap: 14 }, eyebrow: { color: '#8C3C29', fontSize: 10, fontWeight: '800', letterSpacing: 1.5 }, title: { color: '#1C2128', fontSize: 27, fontWeight: '800' }, subtitle: { color: '#687078', fontSize: 13, lineHeight: 19 }, panel: { backgroundColor: '#fff', borderColor: '#E5E1D7', borderRadius: 16, borderWidth: 1, gap: 10, padding: 16 }, label: { color: '#1C2128', fontSize: 13, fontWeight: '800' }, chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, chip: { borderColor: '#E5E1D7', borderRadius: 15, borderWidth: 1, paddingHorizontal: 9, paddingVertical: 7 }, chipActive: { backgroundColor: '#1C2128', borderColor: '#1C2128' }, chipText: { color: '#515963', fontSize: 10 }, chipActiveText: { color: '#fff', fontSize: 10, fontWeight: '700' }, input: { backgroundColor: '#FBFAF6', borderColor: '#E5E1D7', borderRadius: 10, borderWidth: 1, color: '#1C2128', padding: 12 }, multiline: { minHeight: 88, textAlignVertical: 'top' }, primary: { alignItems: 'center', backgroundColor: '#1C2128', borderRadius: 11, paddingVertical: 13 }, primaryText: { color: '#fff', fontWeight: '800' }, sectionTitle: { color: '#1C2128', fontSize: 17, fontWeight: '800' }, card: { backgroundColor: '#fff', borderColor: '#E5E1D7', borderRadius: 16, borderWidth: 1, gap: 8, padding: 16 }, cardTop: { flexDirection: 'row', justifyContent: 'space-between' }, status: { color: '#8C3C29', fontSize: 10, fontWeight: '800', textTransform: 'uppercase' }, city: { color: '#687078', fontSize: 11 }, question: { color: '#1C2128', fontSize: 14, lineHeight: 20 }, response: { color: '#54705B', fontSize: 13, lineHeight: 19 }, note: { color: '#687078', fontSize: 11 } });
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: colors.background },
+  content: { paddingHorizontal: spacing.lg, gap: spacing.md },
+  eyebrow: {
+    color: colors.primary,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+  },
+  title: { color: colors.ink, fontSize: typography.fontSize.display, fontWeight: '800' },
+  subtitle: { color: colors.inkMuted, fontSize: typography.fontSize.body, lineHeight: 19 },
+  panel: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    gap: spacing.sm,
+    padding: spacing.lg,
+  },
+  label: { color: colors.ink, fontSize: typography.fontSize.body, fontWeight: '800' },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
+  chip: {
+    borderColor: colors.border,
+    borderRadius: radii.full,
+    borderWidth: 1,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+  },
+  chipActive: { backgroundColor: colors.ink, borderColor: colors.ink },
+  chipText: { color: colors.inkMuted, fontSize: typography.fontSize.micro },
+  chipActiveText: {
+    color: colors.white,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '700',
+  },
+  input: {
+    backgroundColor: colors.background,
+    borderColor: colors.border,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    color: colors.ink,
+    padding: spacing.md,
+  },
+  multiline: { minHeight: 88, textAlignVertical: 'top' },
+  primary: {
+    alignItems: 'center',
+    backgroundColor: colors.ink,
+    borderRadius: radii.md,
+    paddingVertical: 13,
+  },
+  primaryText: { color: colors.white, fontWeight: '800' },
+  sectionTitle: {
+    color: colors.ink,
+    fontSize: typography.fontSize.title2,
+    fontWeight: '800',
+  },
+  card: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    gap: spacing.sm,
+    padding: spacing.lg,
+  },
+  cardTop: { flexDirection: 'row', justifyContent: 'space-between' },
+  status: {
+    color: colors.primary,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  city: { color: colors.inkMuted, fontSize: typography.fontSize.caption },
+  question: { color: colors.ink, fontSize: typography.fontSize.body, lineHeight: 20 },
+  response: { color: colors.sage, fontSize: typography.fontSize.body, lineHeight: 19 },
+  note: { color: colors.inkMuted, fontSize: typography.fontSize.caption },
+  error: {
+    color: colors.error,
+    backgroundColor: colors.errorBg,
+    padding: spacing.sm,
+    borderRadius: radii.sm,
+    fontSize: typography.fontSize.caption,
+  },
+  stateBox: { gap: spacing.sm, alignItems: 'flex-start' },
+  guardianLink: {
+    color: colors.primary,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+});

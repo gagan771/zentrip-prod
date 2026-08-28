@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
-import { useRouter } from 'expo-router';
+import { Link, useRouter } from 'expo-router';
 import {
-  Image,
+  ActivityIndicator,
   ScrollView,
   StyleSheet,
   Text,
@@ -14,6 +14,23 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getItinerary, getTrip } from '../../lib/trips';
 import { colors, radii, shadows, spacing, typography } from '../../lib/theme';
 import { useStore } from '../../store/useStore';
+
+const INTEREST_LABELS: Record<string, string> = {
+  culture: 'Culture & Heritage',
+  food: 'Street Food & Dining',
+  'culture & heritage': 'Culture & Heritage',
+  'street food & dining': 'Street Food & Dining',
+  'monuments & forts': 'Monuments & Forts',
+  'slow morning walks': 'Slow Morning Walks',
+  'sacred sites & ghats': 'Sacred Sites & Ghats',
+  'artisans & textiles': 'Artisans & Textiles',
+  'nature & escapes': 'Nature & Escapes',
+  'local train journeys': 'Local Train Journeys',
+};
+
+function formatInterestLabel(interest: string): string {
+  return INTEREST_LABELS[interest.toLowerCase()] ?? interest;
+}
 
 const CORRIDOR_HIGHLIGHTS = [
   {
@@ -103,7 +120,6 @@ export default function HomeScreen() {
                 {(user?.name?.[0] ?? 'Z').toUpperCase()}
               </Text>
             </View>
-            <View style={styles.avatarOnlineDot} />
           </TouchableOpacity>
         </View>
 
@@ -111,30 +127,30 @@ export default function HomeScreen() {
         <View style={styles.heroCard}>
           <View style={styles.heroCopy}>
             <View style={styles.heroBadgeRow}>
-              <Text style={styles.heroKicker}>✦ INDIA VOICE COMPANION</Text>
+              <Text style={styles.heroKicker}>✦ MEET ZENNY IN THE MEADOW</Text>
             </View>
             <Text style={styles.heroTitle}>Notice more. Rush less.</Text>
             <Text style={styles.heroBody}>
-              Grounded itineraries, honest decision scores, and Zenny by your side across the Golden Triangle.
+              Grounded itineraries, honest scores, and a live companion waiting in the grass.
             </Text>
           </View>
 
-          {/* Quick Voice Bar */}
-          <TouchableOpacity
-            style={styles.heroVoiceBar}
-            onPress={() => router.push('/(tabs)/companion')}
-            activeOpacity={0.85}
-          >
-            <View style={styles.heroVoiceLeft}>
-              <View style={styles.heroMicCircle}>
-                <Ionicons name="mic" size={16} color={colors.white} />
+          <Link href="/companion" asChild>
+            <TouchableOpacity
+              style={styles.heroVoiceBar}
+              activeOpacity={0.85}
+            >
+              <View style={styles.heroVoiceLeft}>
+                <View style={styles.heroMicCircle}>
+                  <Ionicons name="leaf" size={16} color={colors.grassDeep} />
+                </View>
+                <Text style={styles.heroVoiceText}>Tap Zenny to talk live</Text>
               </View>
-              <Text style={styles.heroVoiceText}>Ask Zenny anything...</Text>
-            </View>
-            <View style={styles.heroVoicePill}>
-              <Text style={styles.heroVoicePillText}>VOICE AI</Text>
-            </View>
-          </TouchableOpacity>
+              <View style={styles.heroVoicePill}>
+                <Text style={styles.heroVoicePillText}>OPEN MEADOW</Text>
+              </View>
+            </TouchableOpacity>
+          </Link>
         </View>
 
         {/* Quick Action Dock */}
@@ -143,17 +159,18 @@ export default function HomeScreen() {
           <Text style={styles.sectionSubtitle}>Tap for quick access</Text>
         </View>
         <View style={styles.actionGrid}>
-          <TouchableOpacity
-            style={[styles.actionCard, { backgroundColor: colors.card }]}
-            onPress={() => router.push('/(tabs)/companion')}
-            activeOpacity={0.85}
-          >
-            <View style={[styles.actionIconWrap, { backgroundColor: colors.primarySoft }]}>
-              <Ionicons name="mic" size={20} color={colors.primary} />
-            </View>
-            <Text style={styles.actionTitle}>Ask Zenny</Text>
-            <Text style={styles.actionDesc}>Live voice answers</Text>
-          </TouchableOpacity>
+          <Link href="/companion" asChild>
+            <TouchableOpacity
+              style={[styles.actionCard, { backgroundColor: colors.card }]}
+              activeOpacity={0.85}
+            >
+              <View style={[styles.actionIconWrap, { backgroundColor: colors.sageSoft }]}>
+                <Ionicons name="leaf" size={20} color={colors.sage} />
+              </View>
+              <Text style={styles.actionTitle}>Ask Zenny</Text>
+              <Text style={styles.actionDesc}>Meadow live call</Text>
+            </TouchableOpacity>
+          </Link>
 
           <TouchableOpacity
             style={[styles.actionCard, { backgroundColor: colors.card }]}
@@ -202,7 +219,12 @@ export default function HomeScreen() {
           ) : null}
         </View>
 
-        {trip ? (
+        {tripQuery.isLoading && activeTripId ? (
+          <View style={styles.tripSkeleton}>
+            <ActivityIndicator color={colors.primary} />
+            <Text style={styles.tripSkeletonText}>Loading your itinerary…</Text>
+          </View>
+        ) : trip ? (
           <TouchableOpacity
             style={styles.tripCard}
             onPress={() => router.push('/(tabs)/trip')}
@@ -342,7 +364,10 @@ export default function HomeScreen() {
             </TouchableOpacity>
           </View>
           <Text style={styles.preferenceText}>
-            {preferences.pace} pace  ·  {preferences.budget} budget  ·  {preferences.interests.slice(0, 3).join(' + ')}
+            {preferences.pace} pace  ·  {preferences.budget} budget  ·  {preferences.interests
+              .slice(0, 3)
+              .map(formatInterestLabel)
+              .join(' + ')}
           </Text>
         </View>
       </ScrollView>
@@ -404,21 +429,10 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSize.headline,
     fontWeight: '700',
   },
-  avatarOnlineDot: {
-    position: 'absolute',
-    bottom: 0,
-    right: 0,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: colors.sage,
-    borderWidth: 2,
-    borderColor: colors.card,
-  },
 
   heroCard: {
-    borderRadius: radii.xl,
-    backgroundColor: colors.ink,
+    borderRadius: radii.xxl,
+    backgroundColor: colors.sageDark,
     padding: spacing.xl,
     overflow: 'hidden',
     ...shadows.lg,
@@ -472,7 +486,7 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: radii.full,
-    backgroundColor: colors.primary,
+    backgroundColor: colors.skyWarm,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -518,15 +532,19 @@ const styles = StyleSheet.create({
 
   actionGrid: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: spacing.sm,
   },
   actionCard: {
-    flex: 1,
+    width: '48%',
+    flexGrow: 1,
+    flexBasis: '47%',
     padding: spacing.md,
-    borderRadius: radii.lg,
+    borderRadius: radii.xl,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: colors.borderLight,
     alignItems: 'flex-start',
+    backgroundColor: colors.card,
     ...shadows.sm,
   },
   actionIconWrap: {
@@ -556,6 +574,23 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     gap: spacing.md,
     ...shadows.md,
+  },
+  tripSkeleton: {
+    borderRadius: radii.xl,
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.xl,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    minHeight: 120,
+    ...shadows.sm,
+  },
+  tripSkeletonText: {
+    color: colors.inkMuted,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '600',
   },
   tripCardTop: {
     flexDirection: 'row',

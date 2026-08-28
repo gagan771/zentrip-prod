@@ -17,6 +17,7 @@ export type ZennyVoiceTurn = {
     confidence: string;
   }>;
   items: string[];
+  brain?: string;
 };
 
 export type ZennyLiveSession = {
@@ -24,6 +25,29 @@ export type ZennyLiveSession = {
   wsUrl: string;
   ticket: string;
   sttProvider: string;
+};
+
+export type ZennyAgentSession = {
+  sessionId: string;
+  wsUrl: string;
+  ticket: string;
+  provider: string;
+  duplex: boolean;
+  sampleRate: number;
+};
+
+export type ZennyVoiceStatus = {
+  agentReady: boolean;
+  liveSttReady: boolean;
+  voiceLiveEnabled: boolean;
+  livekitReady?: boolean;
+};
+
+export type ZennyLivekitToken = {
+  url: string;
+  token: string;
+  room: string;
+  sessionId: string;
 };
 
 const VOICE_SESSION_KEY = 'zentrip.voice.session.v1';
@@ -34,6 +58,10 @@ export async function getVoiceSessionId(): Promise<string> {
   const created = Crypto.randomUUID();
   await AsyncStorage.setItem(VOICE_SESSION_KEY, created);
   return created;
+}
+
+export async function getZennyVoiceStatus(): Promise<ZennyVoiceStatus> {
+  return apiRequest<ZennyVoiceStatus>('/v1/zenny/voice/status');
 }
 
 export async function sendZennyVoiceTurn(uri: string, tripId?: string | null): Promise<ZennyVoiceTurn> {
@@ -60,8 +88,31 @@ export async function createZennyLiveSession(tripId?: string | null): Promise<Ze
   });
 }
 
+export async function createZennyLivekitToken(sessionId?: string): Promise<ZennyLivekitToken> {
+  return apiRequest<ZennyLivekitToken>('/v1/zenny/voice/token', {
+    method: 'POST',
+    body: { sessionId: sessionId || undefined },
+  });
+}
+
+export async function createZennyAgentSession(tripId?: string | null): Promise<ZennyAgentSession> {
+  const sessionId = await getVoiceSessionId();
+  return apiRequest<ZennyAgentSession>('/v1/zenny/voice/agent/session', {
+    method: 'POST',
+    body: { sessionId, tripId: tripId || undefined },
+  });
+}
+
+function socketRoot(): string {
+  return API_BASE_URL.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:');
+}
+
 export function zennyLiveSocketUrl(session: ZennyLiveSession): string {
   if (session.wsUrl.startsWith('ws://') || session.wsUrl.startsWith('wss://')) return session.wsUrl;
-  const root = API_BASE_URL.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:');
-  return `${root}/v1/zenny/voice/live?ticket=${session.ticket}`;
+  return `${socketRoot()}/v1/zenny/voice/live?ticket=${session.ticket}`;
+}
+
+export function zennyAgentSocketUrl(session: ZennyAgentSession): string {
+  if (session.wsUrl.startsWith('ws://') || session.wsUrl.startsWith('wss://')) return session.wsUrl;
+  return `${socketRoot()}/v1/zenny/voice/agent?ticket=${session.ticket}`;
 }

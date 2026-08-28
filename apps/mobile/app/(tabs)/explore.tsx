@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
+  ActivityIndicator,
   ScrollView,
   StyleSheet,
   Text,
@@ -8,12 +9,17 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { colors, radii, shadows, spacing, typography } from '../../lib/theme';
-import { searchKnowledge } from '../../lib/knowledge';
+import {
+  formatKnowledgeSyncedAt,
+  readCachedKnowledgeSearch,
+  searchKnowledge,
+} from '../../lib/knowledge';
+import { firstSearchParam, matchCorridorCity } from '../../lib/trip-prefill';
 
 type ExploreItem = {
   city: string;
@@ -122,9 +128,24 @@ const CITIES = ['All Cities', 'Delhi', 'Agra', 'Jaipur'] as const;
 export default function ExploreScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{ city?: string | string[]; q?: string | string[] }>();
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [selectedCity, setSelectedCity] = useState<string>('All Cities');
   const [search, setSearch] = useState('');
+  const [fromItinerary, setFromItinerary] = useState<string | null>(null);
+
+  useEffect(() => {
+    const city = firstSearchParam(params.city);
+    const q = firstSearchParam(params.q);
+    if (!city && !q) return;
+    const matched = matchCorridorCity(city);
+    if (matched) setSelectedCity(matched);
+    else if (city) setSelectedCity('All Cities');
+    if (q) setSearch(q);
+    const bits = [q, matched ?? city].filter(Boolean);
+    setFromItinerary(bits.length ? bits.join(' · ') : 'your itinerary');
+  }, [params.city, params.q]);
+
   const knowledgeQuery = useQuery({
     queryKey: ['explore-knowledge', search, selectedCity],
     queryFn: () =>
@@ -133,6 +154,26 @@ export default function ExploreScreen() {
         selectedCity === 'All Cities' ? undefined : selectedCity,
       ),
   });
+  const knowledgeCacheQuery = useQuery({
+    queryKey: ['explore-knowledge-cache', search, selectedCity],
+    queryFn: () =>
+      readCachedKnowledgeSearch(
+        search.trim() || 'monument',
+        selectedCity === 'All Cities' ? undefined : selectedCity,
+      ),
+    staleTime: Infinity,
+  });
+  const knowledge =
+    knowledgeQuery.data ??
+    (knowledgeCacheQuery.data
+      ? {
+          ...knowledgeCacheQuery.data.response,
+          source: 'cache' as const,
+          syncedAt: knowledgeCacheQuery.data.syncedAt,
+        }
+      : undefined);
+  const knowledgeSource = knowledge?.source ?? null;
+  const knowledgeSyncedAt = knowledge?.syncedAt ?? null;
 
   const filteredItems = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -167,6 +208,24 @@ export default function ExploreScreen() {
             Mindful discoveries, grounded heritage facts, and moments worth slowing down for.
           </Text>
         </View>
+
+        {fromItinerary ? (
+          <View style={styles.prefillBanner}>
+            <Ionicons name="map-outline" size={14} color={colors.primary} />
+            <Text style={styles.prefillText}>From your itinerary · {fromItinerary}</Text>
+            <TouchableOpacity
+              onPress={() => {
+                setFromItinerary(null);
+                setSearch('');
+                setSelectedCity('All Cities');
+                setSelectedCategory('All');
+              }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons name="close-circle" size={16} color={colors.inkMuted} />
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         {/* Search Bar */}
         <View style={styles.searchContainer}>
@@ -227,29 +286,87 @@ export default function ExploreScreen() {
 
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Sourced Knowledge Base</Text>
-          <Text style={styles.sectionMeta}>{knowledgeQuery.data?.results.length ?? 0} cited places</Text>
+          <Text style={styles.sectionMeta}>
+            {knowledgeQuery.isLoading && !knowledge
+              ? 'Loading…'
+              : `${knowledge?.results.length ?? 0} cited places`}
+          </Text>
         </View>
-        <View style={styles.cardsList}>
-          {knowledgeQuery.data?.results.map((item) => (
-            <TouchableOpacity
-              key={item.claimId}
-              style={styles.placeCard}
-              onPress={() => router.push('/(tabs)/guide')}
-              activeOpacity={0.85}
-            >
-              <Text style={styles.placeTitle}>{item.entityName}</Text>
-              <Text style={styles.placeSubtitle}>{item.city} · {item.entityType}</Text>
-              <Text style={styles.placeDescription}>{item.claim}</Text>
-              <Text style={styles.placeFact}>
-                {item.citation.sourceName} · {item.citation.confidence}
-              </Text>
+        {knowledgeSource ? (
+          <View style={knowledgeSource === 'cache' ? styles.kbCacheBanner : styles.kbLiveBanner}>
+            <Ionicons
+              name={knowledgeSource === 'cache' ? 'cloud-offline-outline' : 'cloud-done-outline'}
+              size={14}
+              color={knowledgeSource === 'cache' ? colors.goldDark : colors.sage}
+            />
+            <Text style={knowledgeSource === 'cache' ? styles.kbCacheText : styles.kbLiveText}>
+              {knowledgeSource === 'live'
+                ? `Live from server${knowledgeSyncedAt ? ` · synced ${formatKnowledgeSyncedAt(knowledgeSyncedAt)}` : ''}`
+                : `Last synced ${knowledgeSyncedAt ? formatKnowledgeSyncedAt(knowledgeSyncedAt) : 'earlier'} · showing saved citations, not live`}
+            </Text>
+          </View>
+        ) : null}
+        {knowledgeQuery.isLoading && !knowledge ? (
+          <View style={styles.kbState}>
+            <ActivityIndicator color={colors.primary} />
+            <Text style={styles.kbStateText}>Fetching verified places…</Text>
+          </View>
+        ) : null}
+        {knowledgeQuery.isError && !knowledge ? (
+          <View style={styles.kbError}>
+            <Ionicons name="alert-circle" size={14} color={colors.error} />
+            <Text style={styles.kbErrorText}>Could not load knowledge. Check your network.</Text>
+            <TouchableOpacity onPress={() => knowledgeQuery.refetch()} hitSlop={8}>
+              <Text style={styles.kbRetryText}>Retry</Text>
             </TouchableOpacity>
-          ))}
-        </View>
+          </View>
+        ) : null}
+        {knowledgeSource === 'cache' ? (
+          <TouchableOpacity
+            style={styles.kbRetryChip}
+            onPress={() => knowledgeQuery.refetch()}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.kbRetryChipText}>Retry live knowledge</Text>
+          </TouchableOpacity>
+        ) : null}
+        {knowledge ? (
+          <View style={styles.cardsList}>
+            {(knowledge.results.length ?? 0) === 0 ? (
+              <Text style={styles.kbEmpty}>
+                {knowledgeSource === 'cache'
+                  ? 'No cited places were saved for this search. Retry when you’re back online.'
+                  : 'No cited places matched this search yet.'}
+              </Text>
+            ) : null}
+            {knowledge.results.map((item) => (
+              <TouchableOpacity
+                key={item.claimId}
+                style={styles.placeCard}
+                onPress={() =>
+                  router.push({
+                    pathname: '/(tabs)/guide',
+                    params: { city: item.city, place: item.entityName },
+                  })
+                }
+                activeOpacity={0.85}
+              >
+                <Text style={styles.placeTitle}>{item.entityName}</Text>
+                <Text style={styles.placeSubtitle}>
+                  {item.city} · {item.entityType}
+                </Text>
+                <Text style={styles.placeDescription}>{item.claim}</Text>
+                <Text style={styles.placeFact}>
+                  {item.citation.sourceName} · {item.citation.confidence}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        ) : null}
 
         {/* Results Header */}
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>The Golden Triangle Corridor</Text>
+          <Text style={styles.sectionTitle}>Editor’s picks</Text>
           <Text style={styles.sectionMeta}>{filteredItems.length} curated stops</Text>
         </View>
 
@@ -259,7 +376,12 @@ export default function ExploreScreen() {
             <TouchableOpacity
               key={item.title}
               style={styles.placeCard}
-              onPress={() => router.push('/(tabs)/guide')}
+              onPress={() =>
+                router.push({
+                  pathname: '/(tabs)/guide',
+                  params: { city: item.city, place: item.title },
+                })
+              }
               activeOpacity={0.88}
             >
               {/* Left Color Pillar */}
@@ -301,8 +423,23 @@ export default function ExploreScreen() {
         {!filteredItems.length ? (
           <View style={styles.noResults}>
             <Ionicons name="search-outline" size={32} color={colors.inkSubtle} />
-            <Text style={styles.noResultsTitle}>No places found</Text>
-            <Text style={styles.noResultsSubtitle}>Try searching for another keyword or change your filters.</Text>
+            <Text style={styles.noResultsTitle}>No editor’s picks match</Text>
+            <Text style={styles.noResultsSubtitle}>
+              {knowledge && knowledge.results.length > 0
+                ? 'Cited knowledge above still applies. Try another keyword, or clear city and category filters.'
+                : 'Try another keyword, or clear city and category filters.'}
+            </Text>
+            <TouchableOpacity
+              style={styles.clearFilters}
+              onPress={() => {
+                setSearch('');
+                setSelectedCity('All Cities');
+                setSelectedCategory('All');
+                setFromItinerary(null);
+              }}
+            >
+              <Text style={styles.clearFiltersText}>Clear filters</Text>
+            </TouchableOpacity>
           </View>
         ) : null}
 
@@ -374,16 +511,31 @@ const styles = StyleSheet.create({
     lineHeight: typography.lineHeight.body,
     maxWidth: 320,
   },
+  prefillBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.primarySoft,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  prefillText: {
+    color: colors.primary,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '700',
+    flex: 1,
+  },
 
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: colors.card,
     borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radii.md,
+    borderColor: colors.borderLight,
+    borderRadius: radii.xl,
     paddingHorizontal: spacing.md,
-    height: 48,
+    height: 52,
     ...shadows.sm,
   },
   searchIcon: {
@@ -468,6 +620,87 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSize.caption,
   },
 
+  kbState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.xl,
+    gap: spacing.sm,
+    backgroundColor: colors.card,
+    borderRadius: radii.xl,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+  },
+  kbStateText: {
+    color: colors.inkMuted,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '600',
+  },
+  kbError: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.errorBg,
+    padding: spacing.md,
+    borderRadius: radii.sm,
+  },
+  kbErrorText: {
+    color: colors.error,
+    fontSize: typography.fontSize.caption,
+    flex: 1,
+  },
+  kbRetryText: {
+    color: colors.primary,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '800',
+  },
+  kbLiveBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.successBg,
+    borderRadius: radii.md,
+    padding: spacing.md,
+  },
+  kbLiveText: {
+    color: colors.sage,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '600',
+    flex: 1,
+  },
+  kbCacheBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.warningBg,
+    borderRadius: radii.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  kbCacheText: {
+    color: colors.goldDark,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '600',
+    flex: 1,
+  },
+  kbRetryChip: {
+    alignSelf: 'flex-start',
+    backgroundColor: colors.ink,
+    borderRadius: radii.full,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+  },
+  kbRetryChipText: {
+    color: colors.white,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '800',
+  },
+  kbEmpty: {
+    color: colors.inkMuted,
+    fontSize: typography.fontSize.caption,
+    paddingVertical: spacing.sm,
+  },
+
   cardsList: {
     gap: spacing.md,
   },
@@ -475,8 +708,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     backgroundColor: colors.card,
     borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radii.xl,
+    borderColor: colors.borderLight,
+    borderRadius: radii.xxl,
     overflow: 'hidden',
     ...shadows.sm,
   },
@@ -579,6 +812,20 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSize.caption,
     color: colors.inkMuted,
     textAlign: 'center',
+  },
+  clearFilters: {
+    marginTop: spacing.sm,
+    backgroundColor: colors.cardWarm,
+    borderRadius: radii.full,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  clearFiltersText: {
+    color: colors.ink,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '700',
   },
 
   plannerCard: {

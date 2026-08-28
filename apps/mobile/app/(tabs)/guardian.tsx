@@ -1,6 +1,6 @@
 import * as Location from 'expo-location';
 import { useEffect, useState } from 'react';
-import { Linking, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Linking, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -8,6 +8,18 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radii, shadows, spacing, typography } from '../../lib/theme';
 import { useStore } from '../../store/useStore';
 import { checkInIncident, createIncident, getActiveIncident, resolveIncident, shareIncident, type GuardianCategory, type GuardianIncident } from '../../lib/guardian';
+
+function buildLocationShareMessage(latitude: number, longitude: number) {
+  const mapUrl = `https://maps.google.com/?q=${latitude},${longitude}`;
+  return `I'm sharing my live location from ZenTrip Guardian.\nCoordinates: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}\nMap: ${mapUrl}`;
+}
+
+const INCIDENT_STEPS: Record<string, string[]> = {
+  created: ['Session started', 'Check in when you feel safer', 'Share location if needed', 'Resolve when done'],
+  checked_in: ['Checked in safe', 'Share location if you still need help', 'Resolve when the situation is clear'],
+  location_shared: ['Location recorded', 'Call 112 if you are in danger', 'Resolve when you are safe'],
+  resolved: ['Session closed'],
+};
 
 const EMERGENCY_ACTIONS = [
   {
@@ -57,6 +69,7 @@ const INCIDENT_CATEGORIES: { id: GuardianCategory; label: string }[] = [
   { id: 'scam', label: 'Scam' },
   { id: 'harassment', label: 'Harassment' },
   { id: 'trail', label: 'Trail issue' },
+  { id: 'other', label: 'Other' },
 ];
 
 export default function GuardianScreen() {
@@ -66,7 +79,7 @@ export default function GuardianScreen() {
   const setTrustedContact = useStore((state) => state.setTrustedContact);
   const [locationStatus, setLocationStatus] = useState<string | null>(null);
   const [incident, setIncident] = useState<GuardianIncident | null>(null);
-  const [incidentCategory, setIncidentCategory] = useState<GuardianCategory>('other');
+  const [incidentCategory, setIncidentCategory] = useState<GuardianCategory>('police');
   const [incidentBusy, setIncidentBusy] = useState(false);
   const [incidentError, setIncidentError] = useState<string | null>(null);
 
@@ -100,7 +113,7 @@ export default function GuardianScreen() {
       const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       const { latitude, longitude } = position.coords;
       setIncident(await shareIncident(incident.id, latitude, longitude));
-      await Linking.openURL(`https://maps.google.com/?q=${latitude},${longitude}`);
+      await Share.share({ message: buildLocationShareMessage(latitude, longitude) });
     } catch (caught) {
       setIncidentError(caught instanceof Error ? caught.message : 'Could not share incident location.');
     } finally {
@@ -118,11 +131,31 @@ export default function GuardianScreen() {
       }
       const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       const { latitude, longitude } = position.coords;
-      const mapUrl = `https://maps.google.com/?q=${latitude},${longitude}`;
-      await Linking.openURL(mapUrl);
-      setLocationStatus('Location link opened in browser.');
+      const message = buildLocationShareMessage(latitude, longitude);
+      await Share.share({ message });
+      setLocationStatus('Share sheet opened — send via SMS, WhatsApp, or Messages.');
     } catch {
       setLocationStatus('Could not retrieve current location.');
+    }
+  }
+
+  async function textTrustedContact() {
+    const digits = trustedContact.replace(/[^+\d]/g, '');
+    if (!digits) return;
+    try {
+      setLocationStatus('Getting your location…');
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (permission.status !== 'granted') {
+        setLocationStatus('Location permission was not granted.');
+        return;
+      }
+      const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const message = encodeURIComponent(buildLocationShareMessage(position.coords.latitude, position.coords.longitude));
+      const smsUrl = `sms:${digits}?body=${message}`;
+      await Linking.openURL(smsUrl);
+      setLocationStatus('SMS draft opened with your location.');
+    } catch {
+      setLocationStatus('Could not open SMS to trusted contact.');
     }
   }
 
@@ -180,20 +213,76 @@ export default function GuardianScreen() {
             <Ionicons name="pulse-outline" size={18} color={colors.error} />
             <Text style={styles.sectionTitle}>Guided incident session</Text>
           </View>
-          <Text style={styles.helper}>Create a local stateful safety session. Zenny never decides emergency actions.</Text>
-          {!incident ? <>
-            <View style={styles.categoryRow}>{INCIDENT_CATEGORIES.map((category) => <TouchableOpacity key={category.id} style={[styles.categoryChip, incidentCategory === category.id && styles.categoryChipActive]} onPress={() => setIncidentCategory(category.id)}><Text style={incidentCategory === category.id ? styles.categoryTextActive : styles.categoryText}>{category.label}</Text></TouchableOpacity>)}</View>
-            {incidentCategory === 'scam' ? <TouchableOpacity style={styles.riskLink} onPress={() => router.push('/risk')}><Text style={styles.riskLinkText}>View sourced scam patterns for this corridor</Text></TouchableOpacity> : null}
-            <TouchableOpacity style={styles.incidentPrimary} onPress={startIncident} disabled={incidentBusy}><Text style={styles.incidentPrimaryText}>{incidentBusy ? 'Starting…' : 'Start incident session'}</Text></TouchableOpacity>
-          </> : <>
-            <View style={styles.statusPill}><Text style={styles.statusPillText}>STATUS · {incident.status.replace('_', ' ').toUpperCase()}</Text></View>
-            <Text style={styles.helper}>Category: {incident.category}. Progress is explicit and can be resolved at any time.</Text>
-            <View style={styles.incidentActions}>
-              {incident.status === 'created' ? <TouchableOpacity style={styles.secondaryAction} onPress={() => runIncidentAction(() => checkInIncident(incident.id))} disabled={incidentBusy}><Text style={styles.secondaryActionText}>Check in safe status</Text></TouchableOpacity> : null}
-              {incident.status !== 'resolved' ? <TouchableOpacity style={styles.locationBtn} onPress={shareIncidentLocation} disabled={incidentBusy}><Text style={styles.locationBtnText}>Share current location</Text></TouchableOpacity> : null}
-              {incident.status !== 'resolved' ? <TouchableOpacity style={styles.resolveBtn} onPress={() => runIncidentAction(() => resolveIncident(incident.id))} disabled={incidentBusy}><Text style={styles.resolveText}>Resolve session</Text></TouchableOpacity> : null}
-            </View>
-          </>}
+          <Text style={styles.helper}>
+            Create a private safety checklist on this phone. Zenny never decides emergency actions — you do.
+          </Text>
+          {!incident ? (
+            <>
+              <View style={styles.categoryRow}>
+                {INCIDENT_CATEGORIES.map((category) => (
+                  <TouchableOpacity
+                    key={category.id}
+                    style={[styles.categoryChip, incidentCategory === category.id && styles.categoryChipActive]}
+                    onPress={() => setIncidentCategory(category.id)}
+                  >
+                    <Text style={incidentCategory === category.id ? styles.categoryTextActive : styles.categoryText}>
+                      {category.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              {incidentCategory === 'scam' ? (
+                <TouchableOpacity style={styles.riskLink} onPress={() => router.push('/risk')}>
+                  <Text style={styles.riskLinkText}>View sourced scam patterns for this corridor</Text>
+                </TouchableOpacity>
+              ) : null}
+              <TouchableOpacity style={styles.incidentPrimary} onPress={startIncident} disabled={incidentBusy}>
+                <Text style={styles.incidentPrimaryText}>{incidentBusy ? 'Starting…' : 'Start incident session'}</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              <View style={styles.statusPill}>
+                <Text style={styles.statusPillText}>STATUS · {incident.status.replace('_', ' ').toUpperCase()}</Text>
+              </View>
+              <Text style={styles.helper}>
+                Category: {incident.category.replace('_', ' ')}. Progress is explicit and can be resolved at any time.
+              </Text>
+              <View style={styles.checklist}>
+                {(INCIDENT_STEPS[incident.status] ?? INCIDENT_STEPS.created).map((step, index) => (
+                  <View key={step} style={styles.checklistRow}>
+                    <View style={[styles.checklistDot, index === 0 && styles.checklistDotActive]} />
+                    <Text style={[styles.checklistText, index === 0 && styles.checklistTextActive]}>{step}</Text>
+                  </View>
+                ))}
+              </View>
+              <View style={styles.incidentActions}>
+                {incident.status === 'created' ? (
+                  <TouchableOpacity
+                    style={styles.secondaryAction}
+                    onPress={() => runIncidentAction(() => checkInIncident(incident.id))}
+                    disabled={incidentBusy}
+                  >
+                    <Text style={styles.secondaryActionText}>Check in safe status</Text>
+                  </TouchableOpacity>
+                ) : null}
+                {incident.status !== 'resolved' ? (
+                  <TouchableOpacity style={styles.locationBtn} onPress={shareIncidentLocation} disabled={incidentBusy}>
+                    <Text style={styles.locationBtnText}>Share current location</Text>
+                  </TouchableOpacity>
+                ) : null}
+                {incident.status !== 'resolved' ? (
+                  <TouchableOpacity
+                    style={styles.resolveBtn}
+                    onPress={() => runIncidentAction(() => resolveIncident(incident.id))}
+                    disabled={incidentBusy}
+                  >
+                    <Text style={styles.resolveText}>Resolve session</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            </>
+          )}
           {incidentError ? <Text style={styles.locationStatusText}>{incidentError}</Text> : null}
         </View>
 
@@ -204,7 +293,7 @@ export default function GuardianScreen() {
             <Text style={styles.sectionTitle}>Trusted Emergency Contact</Text>
           </View>
           <Text style={styles.helper}>
-            Save a phone number to call directly during an incident.
+            Save an Indian mobile number (+91…) to call or text during an incident.
           </Text>
           <View style={styles.inputWrapper}>
             <Ionicons name="call-outline" size={16} color={colors.inkMuted} style={styles.inputIcon} />
@@ -227,6 +316,15 @@ export default function GuardianScreen() {
             <Ionicons name="call-outline" size={16} color={colors.primary} style={{ marginRight: 6 }} />
             <Text style={styles.secondaryActionText}>Call Trusted Contact</Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.locationBtn, !trustedContact.trim() && styles.disabled]}
+            disabled={!trustedContact.trim()}
+            onPress={textTrustedContact}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="chatbubble-outline" size={16} color={colors.white} style={{ marginRight: 6 }} />
+            <Text style={styles.locationBtnText}>Text location to contact</Text>
+          </TouchableOpacity>
         </View>
 
         {/* Location Share Card */}
@@ -236,11 +334,11 @@ export default function GuardianScreen() {
             <Text style={styles.sectionTitle}>Share GPS Coordinates</Text>
           </View>
           <Text style={styles.helper}>
-            Retrieve exact coordinates from phone hardware to share via SMS/WhatsApp.
+            Get exact coordinates from phone GPS, then share via SMS, WhatsApp, or any app.
           </Text>
           <TouchableOpacity style={styles.locationBtn} onPress={shareLocation} activeOpacity={0.85}>
-            <Ionicons name="location-outline" size={16} color={colors.white} style={{ marginRight: 6 }} />
-            <Text style={styles.locationBtnText}>Get & Open Current Location</Text>
+            <Ionicons name="share-outline" size={16} color={colors.white} style={{ marginRight: 6 }} />
+            <Text style={styles.locationBtnText}>Share current location</Text>
           </TouchableOpacity>
           {locationStatus ? <Text style={styles.locationStatusText}>{locationStatus}</Text> : null}
         </View>
@@ -531,6 +629,35 @@ const styles = StyleSheet.create({
   },
   incidentActions: {
     gap: spacing.sm,
+  },
+  checklist: {
+    gap: 6,
+    backgroundColor: colors.errorBg,
+    borderRadius: radii.md,
+    padding: spacing.md,
+  },
+  checklistRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  checklistDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.borderDark,
+  },
+  checklistDotActive: {
+    backgroundColor: colors.error,
+  },
+  checklistText: {
+    color: colors.inkMuted,
+    fontSize: typography.fontSize.caption,
+    flex: 1,
+  },
+  checklistTextActive: {
+    color: colors.ink,
+    fontWeight: '700',
   },
   resolveBtn: {
     alignItems: 'center',

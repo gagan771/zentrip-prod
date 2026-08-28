@@ -13,6 +13,8 @@ export type Peak = {
   description: string;
   sourceName: string;
   lastVerified: string;
+  angularDifferenceDegrees?: number | null;
+  lineOfSight?: string;
 };
 
 export type PeaksResponse = {
@@ -20,10 +22,19 @@ export type PeaksResponse = {
   latitude: number;
   longitude: number;
   bearingDegrees?: number | null;
+  fieldOfView?: number | null;
+  demApplied?: boolean;
+  identificationMethod?: string;
+  demNote?: string | null;
 };
 
-export function nearbyPeaks(latitude: number, longitude: number, bearing?: number): Promise<PeaksResponse> {
+export function nearbyPeaks(
+  latitude: number,
+  longitude: number,
+  options?: { bearing?: number; fieldOfView?: number }
+): Promise<PeaksResponse> {
   const query = new URLSearchParams({ latitude: String(latitude), longitude: String(longitude) });
-  if (bearing !== undefined) query.set('bearing', String(bearing));
+  if (options?.bearing !== undefined) query.set('bearing', String(options.bearing));
+  if (options?.fieldOfView !== undefined) query.set('fieldOfView', String(options.fieldOfView));
   return apiRequest<PeaksResponse>(`/v1/peaks/nearby?${query.toString()}`);
 }

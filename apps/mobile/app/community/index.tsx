@@ -1,5 +1,6 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   ScrollView,
@@ -9,13 +10,15 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { getCommunityEvents } from '../../lib/social';
 import { colors, radii, shadows, spacing, typography } from '../../lib/theme';
+import { useRouter } from 'expo-router';
+
+const SAVED_EVENTS_KEY = 'zentrip.community.savedEventIds';
 
 export default function CommunityScreen() {
-  const insets = useSafeAreaInsets();
+  const router = useRouter();
   const [city, setCity] = useState<string | undefined>();
   const [savedIds, setSavedIds] = useState<string[]>([]);
   const query = useQuery({
@@ -24,17 +27,38 @@ export default function CommunityScreen() {
   });
   const events = query.data?.events ?? [];
 
+  useEffect(() => {
+    AsyncStorage.getItem(SAVED_EVENTS_KEY)
+      .then((raw) => {
+        if (!raw) return;
+        const parsed = JSON.parse(raw) as string[];
+        if (Array.isArray(parsed)) setSavedIds(parsed);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  async function toggleSaved(eventId: string) {
+    const next = savedIds.includes(eventId)
+      ? savedIds.filter((id) => id !== eventId)
+      : [...savedIds, eventId];
+    setSavedIds(next);
+    try {
+      await AsyncStorage.setItem(SAVED_EVENTS_KEY, JSON.stringify(next));
+    } catch {
+      // Local preference only — ignore write failures.
+    }
+  }
+
   return (
     <View style={styles.screenWrapper}>
       <ScrollView
         style={styles.container}
         contentContainerStyle={[
           styles.content,
-          { paddingTop: insets.top + spacing.md, paddingBottom: spacing.xxxl },
+          { paddingTop: spacing.md, paddingBottom: spacing.xxxl },
         ]}
         showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
         <View style={styles.header}>
           <View style={styles.badgeRow}>
             <Ionicons name="chatbubbles-outline" size={12} color={colors.primary} />
@@ -46,7 +70,6 @@ export default function CommunityScreen() {
           </Text>
         </View>
 
-        {/* City Filter Pills */}
         <View style={styles.chipsRow}>
           {['All', 'Delhi', 'Agra', 'Jaipur'].map((option) => {
             const value = option === 'All' ? undefined : option;
@@ -75,6 +98,9 @@ export default function CommunityScreen() {
           <View style={styles.errorBanner}>
             <Ionicons name="alert-circle" size={14} color={colors.error} />
             <Text style={styles.errorText}>Could not load events. Check your network.</Text>
+            <TouchableOpacity onPress={() => query.refetch()}>
+              <Text style={styles.saveText}>Retry</Text>
+            </TouchableOpacity>
           </View>
         ) : null}
 
@@ -86,7 +112,6 @@ export default function CommunityScreen() {
           </View>
         ) : null}
 
-        {/* Events Cards */}
         <View style={styles.eventsList}>
           {events.map((event) => (
             <View key={event.id} style={styles.eventCard}>
@@ -116,16 +141,25 @@ export default function CommunityScreen() {
 
               <View style={styles.cardFooter}>
                 <Text style={styles.sourceText}>Source: {event.source.replace('_', ' ')}</Text>
-                <TouchableOpacity
-                  onPress={() =>
-                    setSavedIds((ids) => (ids.includes(event.id) ? ids.filter((id) => id !== event.id) : [...ids, event.id]))
-                  }
-                >
-                  <Text style={styles.sourceText}>
+                <TouchableOpacity onPress={() => toggleSaved(event.id)}>
+                  <Text style={styles.saveText}>
                     {savedIds.includes(event.id) ? 'Saved on this device' : 'Save to my list'}
                   </Text>
                 </TouchableOpacity>
               </View>
+              <TouchableOpacity
+                style={styles.exploreCity}
+                onPress={() =>
+                  router.push({
+                    pathname: '/(tabs)/explore',
+                    params: { city: event.city, q: event.venue },
+                  })
+                }
+                activeOpacity={0.85}
+              >
+                <Ionicons name="sparkles-outline" size={13} color={colors.primary} />
+                <Text style={styles.exploreCityText}>Explore {event.city}</Text>
+              </TouchableOpacity>
             </View>
           ))}
         </View>
@@ -228,6 +262,7 @@ const styles = StyleSheet.create({
   errorText: {
     color: colors.error,
     fontSize: typography.fontSize.caption,
+    flex: 1,
   },
   emptyWrap: {
     alignItems: 'center',
@@ -320,10 +355,26 @@ const styles = StyleSheet.create({
     borderTopColor: colors.borderLight,
     paddingTop: spacing.xs,
     marginTop: spacing.xs,
+    gap: 4,
   },
   sourceText: {
     color: colors.inkSubtle,
     fontSize: typography.fontSize.micro,
   },
+  saveText: {
+    color: colors.primary,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '700',
+  },
+  exploreCity: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4,
+  },
+  exploreCityText: {
+    color: colors.primary,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '800',
+  },
 });
-

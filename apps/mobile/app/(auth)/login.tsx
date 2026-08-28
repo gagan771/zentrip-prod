@@ -209,7 +209,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xxl,
   },
   badgeRow: {
-    backgroundColor: colors.primarySoft,
+    backgroundColor: colors.sageSoft,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.xs,
     borderRadius: radii.full,
@@ -218,7 +218,7 @@ const styles = StyleSheet.create({
   brandKicker: {
     fontSize: typography.fontSize.micro,
     fontWeight: '800',
-    color: colors.primary,
+    color: colors.sage,
     letterSpacing: 2.2,
   },
   title: {
@@ -238,10 +238,10 @@ const styles = StyleSheet.create({
   },
   card: {
     backgroundColor: colors.card,
-    borderRadius: radii.xl,
+    borderRadius: radii.xxl,
     padding: spacing.xl,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: colors.borderLight,
     ...shadows.md,
   },
   inputLabel: {
