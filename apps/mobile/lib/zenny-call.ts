@@ -347,6 +347,11 @@ export function useZennyCall() {
           updatePhase('live');
         }
         if ((message.type === 'partial' || message.type === 'final') && message.text) {
+          if (message.type === 'final') streamedTurnIndex = -1;
+          if (phaseRef.current === 'speaking') {
+            stopPcmPlayback();
+            stopSpeaking();
+          }
           setPartial(message.text);
         }
         if (message.type === 'speak' && message.text) {
@@ -393,7 +398,12 @@ export function useZennyCall() {
             return next;
           });
           streamedTurnIndex = -1;
-          void speakAsync(message.spokenText, 'en-IN').catch(() => undefined);
+          updatePhase('speaking');
+          void speakAsync(message.spokenText, 'en-IN')
+            .then(() => {
+              if (duplexRef.current) updatePhase('live');
+            })
+            .catch(() => undefined);
         }
         if (message.type === 'interrupt') {
           stopPcmPlayback();

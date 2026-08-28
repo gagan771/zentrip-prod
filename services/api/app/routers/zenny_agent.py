@@ -89,6 +89,11 @@ async def create_livekit_token(
     request: Request,
     user: User = Depends(get_current_user),
 ) -> ZennyLivekitTokenResponse:
+    if settings.voice_use_shared_gateway:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Shared Zenny voice is enabled. Use /v1/zenny/voice/live/session so Deepgram turns use the canonical gateway.",
+        )
     if not livekit_ready():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -114,6 +119,11 @@ async def create_agent_session(
     db: AsyncSession = Depends(get_db),
 ) -> ZennyAgentSessionResponse:
     del db
+    if settings.voice_use_shared_gateway:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Shared Zenny voice is enabled. Provider-owned agent sessions are disabled.",
+        )
     if not settings.voice_live_enabled:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Live voice is disabled.")
     if not voice_agent_ready():

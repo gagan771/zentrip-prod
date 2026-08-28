@@ -44,7 +44,6 @@ def upgrade() -> None:
     op.create_table(
         "knowledge_gaps",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("gap_key", sa.String(length=540), nullable=False),
         sa.Column("normalized_query", sa.String(length=500), nullable=False),
         sa.Column("example_query", sa.Text(), nullable=False),
         sa.Column("intent", sa.String(length=30), nullable=False),
@@ -57,7 +56,6 @@ def upgrade() -> None:
         sa.Column("resolution_note", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.UniqueConstraint("gap_key", name="uq_knowledge_gaps_gap_key"),
     )
     op.create_index("ix_knowledge_gaps_normalized_query", "knowledge_gaps", ["normalized_query"])
     op.create_index("ix_knowledge_gaps_priority", "knowledge_gaps", ["priority"])

@@ -207,9 +207,13 @@ async def live_voice(websocket: WebSocket, ticket: str = Query(...)) -> None:
         if event.kind == "partial" and event.text:
             await emit({"type": "partial", "text": event.text})
         elif event.kind == "speech_start":
+            last_final = ""
             if agent_task and not agent_task.done():
                 await cancel_agent()
-                await emit({"type": "status", "phase": "listening"})
+            # The mobile client owns phone TTS, so explicitly stop it when a new
+            # utterance starts instead of letting a barge-in talk over stale audio.
+            await emit({"type": "interrupt"})
+            await emit({"type": "status", "phase": "listening"})
         elif event.kind == "final":
             text = event.text.strip()
             if not text or text.casefold() == last_final.casefold():
