@@ -8,6 +8,10 @@ by the word "visit".
 INTENT_KEYWORDS: dict[str, list[str]] = {
     # Safety FIRST: "I need help, I feel unsafe" also contains services' "need".
     "safety": ["scam", "scams", "help me", "help, i", "emergency", "lost my", "unsafe", "in danger"],
+    "recommendation": [
+        "recommend", "recommendation", "suggest", "where should i go", "where should i travel",
+        "best places", "best destination", "offbeat", "hidden gem", "beach holiday", "weekend getaway",
+    ],
     "guide": [
         "what is this", "what am i looking at", "history of", "tell me about",
         "monument", "temple", "fort", "palace", "tomb", "caves", "stupa",

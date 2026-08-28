@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_intent import classify_intent, is_backchannel
+from app.adaptive_planner import merge_profile, rank_candidates, select_diverse_recommendations
 from app.comparison_service import find_known_locations
 from app.knowledge_learning import record_knowledge_interaction
 from app.knowledge_service import search_published_claims
@@ -35,7 +36,7 @@ from app.spoken import spoken_preview
 SESSION_TTL = timedelta(hours=2)
 
 # Policy tiers per 01-zentrip-companion.md §6 / master spec §43.
-NO_CONFIRMATION_INTENTS = {"guide", "payment", "translation", "compare", "community", "chat"}
+NO_CONFIRMATION_INTENTS = {"guide", "recommendation", "payment", "translation", "compare", "community", "chat"}
 CONFIRMATION_INTENTS = {"trip_planning", "services", "buddy"}
 STRONG_VERIFICATION_INTENTS = {"safety"}
 
@@ -115,10 +116,52 @@ async def build_context(user: User, db: AsyncSession | None = None, trip_id: uui
     return context
 
 
+async def _recommendation_reply(db: AsyncSession, text: str, context: dict | None = None) -> tuple[str, str, list[dict]]:
+    """Recommend diverse Indian destinations from the same cited candidate pool as planning."""
+    from app.routers.trips import _load_candidate_places
+
+    candidates = await _load_candidate_places(db, None)
+    preference_statements = list((context or {}).get("preferences", []))
+    profile = merge_profile(None, [text, *preference_statements])
+    lowered = text.casefold()
+    budget = "luxury" if any(term in lowered for term in ("luxury", "premium", "splurge")) else "backpacker" if any(term in lowered for term in ("cheap", "budget", "backpack")) else "mixed"
+    trip_days = None
+    duration_match = re.search(r"\b(\d+)\s*day", lowered)
+    if duration_match:
+        trip_days = int(duration_match.group(1))
+    ranked = rank_candidates(
+        candidates,
+        profile,
+        {"budgetLevel": budget, "tripDays": trip_days, "travelMonth": date.today().month, "avoid": ["crowded"] if "avoid crowd" in lowered else []},
+    )
+    selected = select_diverse_recommendations(ranked, limit=5)
+    if not selected:
+        return "I don't have enough reviewed destination data for that request yet. Try a theme such as heritage, beaches, wildlife, food, wellness, or mountains.", "estimated", []
+
+    lines: list[str] = []
+    citations: list[dict] = []
+    for item in selected[:3]:
+        tags = ", ".join(item.get("experienceTags", [])[:3]) or "India travel"
+        breakdown = item.get("scoreBreakdown", {})
+        season_note = "good seasonal fit" if breakdown.get("seasonFit", 0) >= 0.9 else "check seasonal conditions"
+        lines.append(f"{item['name']} ({item['city']}) — {tags}; {season_note}. {item['fact']}")
+        citations.append(
+            {
+                "sourceName": item.get("source", "Zentrip reviewed source"),
+                "sourceUrl": item.get("sourceUrl"),
+                "sourceLocator": None,
+                "lastVerified": date.fromisoformat(item["lastVerified"]) if item.get("lastVerified") else None,
+                "confidence": item.get("confidence", "estimated"),
+            }
+        )
+    confidence = "verified" if all(item.get("confidence") == "verified" for item in selected[:3]) else "estimated"
+    return "My strongest matches for you are: " + " ".join(lines) + " Ask for a tighter shortlist if you share dates, budget, and whether you prefer cities, coast, mountains, wildlife, or heritage.", confidence, citations
+
+
 def _no_tool_reply(intent: str) -> str:
     if intent == "chat":
         return (
-            "I can help with monuments and history, trains and cabs, UPI and cash, "
+            "I can suggest Indian destinations, help with monuments and history, trains and cabs, UPI and cash, "
             "safety, translation, groceries, or finding travel buddies. What do you need?"
         )
     return (
@@ -485,8 +528,7 @@ async def handle_message(
 ) -> AgentReply:
     intent = classify_intent(text)
     policy_tier = tag_policy(intent)
-    if not voice:
-        await build_context(user, db, trip_id=trip_id)  # noqa: F841 — real read path now; see build_context's docstring
+    context = await build_context(user, db, trip_id=trip_id) if not voice else {"preferences": []}
 
     if voice:
         asyncio.create_task(append_session_message(user.id, "user", text, session_id))
@@ -498,7 +540,9 @@ async def handle_message(
     # Same for "safety" (15/16): Guardian/emergency/scam content rides this pipeline too,
     # with one addition below — an emergency-keyword fast path that answers first with the
     # 112 number regardless of what else the KB search returns.
-    if intent in ("guide", "payment", "safety") and db is not None:
+    if intent == "recommendation" and db is not None:
+        reply_text, confidence, citations = await _recommendation_reply(db, text, context)
+    elif intent in ("guide", "payment", "safety") and db is not None:
         reply_text, confidence, citations = await _guide_reply(db, text, limit=3 if voice else 8)
         if intent == "safety" and not _is_emergency(text):
             risk_result = await _risk_reply(db, text)

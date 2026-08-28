@@ -70,24 +70,24 @@ async def _load_owned_trip(db: AsyncSession, trip_id: uuid.UUID, user_id: uuid.U
     return trip
 
 
-async def _load_candidate_places(db: AsyncSession, cities: list[str]) -> list[dict]:
+async def _load_candidate_places(db: AsyncSession, cities: list[str] | None) -> list[dict]:
     # Itinerary generation is only allowed to see reviewed, published claims. The
     # older KnowledgeEntity.fact column is a display summary, not a source boundary.
-    rows = (
-        await db.execute(
-            select(KnowledgeEntity, KnowledgeClaim, KnowledgeSource)
-            .join(KnowledgeClaim, KnowledgeClaim.entity_id == KnowledgeEntity.id)
-            .join(KnowledgeSource, KnowledgeSource.id == KnowledgeClaim.source_id)
-            .where(
-                KnowledgeEntity.city.in_(cities),
-                KnowledgeEntity.status == "published",
-                KnowledgeEntity.entity_type.in_(["monument", "activity"]),
-                KnowledgeClaim.verification_status == "published",
-                KnowledgeSource.status == "active",
-            )
-            .order_by(KnowledgeClaim.last_verified.desc())
+    statement = (
+        select(KnowledgeEntity, KnowledgeClaim, KnowledgeSource)
+        .join(KnowledgeClaim, KnowledgeClaim.entity_id == KnowledgeEntity.id)
+        .join(KnowledgeSource, KnowledgeSource.id == KnowledgeClaim.source_id)
+        .where(
+            KnowledgeEntity.status == "published",
+            KnowledgeEntity.entity_type.in_(["monument", "activity"]),
+            KnowledgeClaim.verification_status == "published",
+            KnowledgeSource.status == "active",
         )
-    ).all()
+        .order_by(KnowledgeClaim.last_verified.desc())
+    )
+    if cities:
+        statement = statement.where(KnowledgeEntity.city.in_(cities))
+    rows = (await db.execute(statement)).all()
     entity_ids = list({entity.id for entity, _, _ in rows})
     observations_by_entity: dict[uuid.UUID, list[KnowledgeObservation]] = {}
     if entity_ids:
