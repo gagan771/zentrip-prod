@@ -39,7 +39,7 @@ def _redact(text: str) -> str:
 
 
 def _stt_provider_name() -> str:
-    if settings.sarvam_api_key.strip():
+    if settings.sarvam_key_list:
         return "sarvam"
     if settings.deepgram_api_key.strip():
         return "deepgram"
@@ -68,7 +68,7 @@ async def create_live_session(
     if not settings.voice_live_enabled or not settings.live_stt_ready:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Live voice is not configured. Set SARVAM_API_KEY (or DEEPGRAM_API_KEY) on the API.",
+            detail="Live voice is not configured. Set SARVAM_API_KEYS (or DEEPGRAM_API_KEY) on the API.",
         )
     payload = body
     session_id = payload.sessionId or str(uuid.uuid4())
