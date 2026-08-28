@@ -12,11 +12,90 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.deps import get_current_user
+from app.adaptive_planner import merge_profile, rank_candidates, select_diverse_recommendations
 from app.models import KnowledgeClaim, KnowledgeEntity, KnowledgeSource, User
-from app.schemas import GuideIdentifyResponse, KnowledgeCitationOut
+from app.schemas import (
+    DestinationRecommendationOut,
+    DestinationRecommendationsResponse,
+    GuideIdentifyResponse,
+    KnowledgeCitationOut,
+)
 from app.vision_service import VisionNotConfiguredError, VisionProviderError, identify_landmark
 
 router = APIRouter(prefix="/v1/guide", tags=["guide"])
+
+
+@router.get("/recommendations", response_model=DestinationRecommendationsResponse)
+async def recommend_destinations(
+    interests: str | None = None,
+    days: int | None = None,
+    month: int | None = None,
+    budget: str = "mixed",
+    travel_party: str = "solo",
+    accessibility: str | None = None,
+    q: str | None = None,
+    limit: int = 5,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> DestinationRecommendationsResponse:
+    """Return diverse, explainable destination matches from reviewed claims."""
+    del user
+    from app.routers.trips import _load_candidate_places
+
+    if month is not None and not 1 <= month <= 12:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="month must be between 1 and 12")
+    if budget not in {"backpacker", "comfort", "luxury", "mixed"}:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unsupported budget")
+    if travel_party not in {"solo", "couple", "family", "group"}:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unsupported travel party")
+    if not 1 <= limit <= 10:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="limit must be between 1 and 10")
+
+    profile = merge_profile(
+        {
+            "interests": [item.strip() for item in (interests or "").split(",") if item.strip()],
+            "travelParty": travel_party,
+            "accessibility": [item.strip() for item in (accessibility or "").split(",") if item.strip()],
+        },
+        [q] if q else [],
+    )
+    candidates = await _load_candidate_places(db, None)
+    ranked = rank_candidates(
+        candidates,
+        profile,
+        {"budgetLevel": budget, "tripDays": days, "travelMonth": month},
+    )
+    selected = select_diverse_recommendations(ranked, limit=limit)
+    results = []
+    for item in selected:
+        breakdown = item.get("scoreBreakdown", {})
+        tradeoffs = []
+        if breakdown.get("seasonFit", 1) < 0.9:
+            tradeoffs.append("Seasonal conditions may be less comfortable; verify current weather and closures.")
+        if breakdown.get("accessibilityFit", 1) < 0.8:
+            tradeoffs.append("Accessibility varies; confirm step-free access and facilities with the operator.")
+        if breakdown.get("tripLengthFit", 1) < 0.8:
+            tradeoffs.append("This destination may need more or fewer days than your current trip length.")
+        results.append(
+            DestinationRecommendationOut(
+                placeId=item["placeId"],
+                name=item["name"],
+                city=item["city"],
+                fact=item["fact"],
+                score=item["plannerScore"],
+                scoreBreakdown=breakdown,
+                experienceTags=item.get("experienceTags", []),
+                source=KnowledgeCitationOut(
+                    sourceName=item.get("source", "Zentrip reviewed source"),
+                    sourceUrl=item.get("sourceUrl"),
+                    sourceLocator=None,
+                    lastVerified=item.get("lastVerified"),
+                    confidence=item.get("confidence", "estimated"),
+                ),
+                tradeoffs=tradeoffs,
+            )
+        )
+    return DestinationRecommendationsResponse(results=results, profile=profile, month=month)
 
 _MAX_UPLOAD_BYTES = 8_000_000
 _CONTENT_TYPE_MEDIA = {

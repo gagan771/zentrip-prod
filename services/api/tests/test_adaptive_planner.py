@@ -3,7 +3,13 @@ from datetime import date
 from types import SimpleNamespace
 from uuid import uuid4
 
-from app.adaptive_planner import fallback_days, merge_profile, rank_candidates, validate_generated_days
+from app.adaptive_planner import (
+    fallback_days,
+    merge_profile,
+    rank_candidates,
+    select_diverse_recommendations,
+    validate_generated_days,
+)
 
 
 class AdaptivePlannerTests(unittest.TestCase):
@@ -100,6 +106,56 @@ class AdaptivePlannerTests(unittest.TestCase):
         ]
         days = fallback_days(trip, candidates, {}, {"maxActivitiesPerDay": 3})
         self.assertEqual([len(day["activities"]) for day in days], [1, 1, 1, 2, 1, 2, 1])
+
+    def test_world_class_fit_considers_season_accessibility_and_trip_length(self) -> None:
+        candidates = [
+            {
+                "placeId": "summer",
+                "name": "Summer Coast",
+                "city": "Goa",
+                "fact": "A coastal beach escape.",
+                "experienceProfile": {
+                    "tags": ["beach"], "seasonality": "November–February", "durationMinutes": 240,
+                    "destinationProfile": {
+                        "destinationKind": "coastal", "bestSeasons": ["November–February"],
+                        "typicalStayMinDays": 3, "typicalStayMaxDays": 6,
+                        "accessibility": {"wheelchair": "medium", "family": "medium"},
+                    },
+                },
+            },
+            {
+                "placeId": "heritage",
+                "name": "Heritage City",
+                "city": "Delhi",
+                "fact": "A heritage city with museums.",
+                "experienceProfile": {
+                    "tags": ["history"], "seasonality": "April–October", "durationMinutes": 120,
+                    "destinationProfile": {
+                        "destinationKind": "heritage_city", "bestSeasons": ["April–October"],
+                        "typicalStayMinDays": 1, "typicalStayMaxDays": 3,
+                        "accessibility": {"wheelchair": "high", "family": "high"},
+                    },
+                },
+            },
+        ]
+        ranked = rank_candidates(
+            candidates,
+            {"interests": ["beach"], "travelParty": "family", "accessibility": ["wheelchair"]},
+            {"budgetLevel": "mixed", "travelMonth": 7, "tripDays": 4},
+        )
+        coast = next(item for item in ranked if item["placeId"] == "summer")
+        self.assertEqual(coast["scoreBreakdown"]["seasonFit"], 0.45)
+        self.assertEqual(coast["scoreBreakdown"]["accessibilityFit"], 0.65)
+        self.assertLess(coast["scoreBreakdown"]["seasonFit"], next(item for item in ranked if item["placeId"] == "heritage")["scoreBreakdown"]["seasonFit"])
+
+    def test_diverse_recommendations_do_not_fill_with_one_city(self) -> None:
+        ranked = [
+            {"name": "A", "city": "Delhi", "experienceProfile": {"destinationProfile": {"destinationKind": "city"}}},
+            {"name": "B", "city": "Delhi", "experienceProfile": {"destinationProfile": {"destinationKind": "city"}}},
+            {"name": "C", "city": "Goa", "experienceProfile": {"destinationProfile": {"destinationKind": "coastal"}}},
+        ]
+        selected = select_diverse_recommendations(ranked, 2)
+        self.assertEqual([item["name"] for item in selected], ["A", "C"])
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ without a database or a model provider.
 from __future__ import annotations
 
 from datetime import date, datetime
+import re
 from typing import Any
 
 
@@ -107,7 +108,7 @@ _MONTHS = {
 
 def _season_months(value: Any) -> set[int]:
     raw = _text(value).replace("–", "-").replace("—", "-")
-    found = [_MONTHS[name] for name in _MONTHS if name in raw]
+    found = [_MONTHS[name] for name in re.findall(r"\b(" + "|".join(_MONTHS) + r")\b", raw)]
     if len(found) < 2:
         return set(found)
     start, end = found[0], found[1]
@@ -424,8 +425,9 @@ def fallback_days(trip: Any, ranked_candidates: list[dict[str, Any]], profile: d
         remaining_days = city_day_counts[city_key] - city_day_seen[city_key] + 1
         target_activities = min(max_activities, max(1, (len(city_candidates) + remaining_days - 1) // remaining_days)) if city_candidates else 0
         activities: list[dict[str, Any]] = []
-        for slot, candidate in enumerate(choices[:target_activities]):
-            start = max(9 * 60, wake_time) + slot * 210
+        cursor = max(9 * 60, wake_time)
+        for candidate in choices[:target_activities]:
+            start = cursor
             experience = candidate.get("experienceProfile") or {}
             if not isinstance(experience, dict):
                 experience = {}
@@ -444,5 +446,8 @@ def fallback_days(trip: Any, ranked_candidates: list[dict[str, Any]], profile: d
                     "status": "planned",
                 }
             )
+            # Preserve a realistic transfer/rest buffer and guarantee that the
+            # deterministic fallback never creates overlapping activities.
+            cursor = start + duration + 30
         days.append({"day": index + 1, "date": (trip.start_date + (date.resolution * index)).isoformat(), "city": city, "activities": activities})
     return days

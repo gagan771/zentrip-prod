@@ -63,6 +63,9 @@ class AgentIntentTests(unittest.TestCase):
     def test_itinerary_language_still_trip_planning(self) -> None:
         self.assertEqual(classify_intent("plan 3 days in Jaipur"), "trip_planning")
 
+    def test_destination_request_routes_to_recommendation_engine(self) -> None:
+        self.assertEqual(classify_intent("suggest a quiet beach destination in India"), "recommendation")
+
     def test_going_to_jaipur_is_not_buddy_matching(self) -> None:
         self.assertNotEqual(classify_intent("I'm going to Jaipur"), "buddy")
         self.assertEqual(classify_intent("find travel buddies for Spiti"), "buddy")

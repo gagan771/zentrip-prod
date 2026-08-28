@@ -1,4 +1,4 @@
-import { apiFormRequest } from './api-client';
+import { apiFormRequest, apiRequest } from './api-client';
 
 export type GuideCitation = {
   sourceName: string;
@@ -16,6 +16,48 @@ export type GuideIdentifyResult = {
   citations: GuideCitation[];
   contentMode: string;
 };
+
+export type DestinationRecommendation = {
+  placeId: string;
+  name: string;
+  city: string;
+  fact: string;
+  score: number;
+  scoreBreakdown: Record<string, number>;
+  experienceTags: string[];
+  source: GuideCitation;
+  tradeoffs: string[];
+};
+
+export type DestinationRecommendationsResult = {
+  results: DestinationRecommendation[];
+  profile: Record<string, unknown>;
+  month: number | null;
+  provenance: string;
+};
+
+export function recommendDestinations(params: {
+  interests?: string[];
+  days?: number;
+  month?: number;
+  budget?: 'backpacker' | 'comfort' | 'luxury' | 'mixed';
+  travelParty?: 'solo' | 'couple' | 'family' | 'group';
+  accessibility?: string[];
+  query?: string;
+  limit?: number;
+} = {}): Promise<DestinationRecommendationsResult> {
+  const query = new URLSearchParams();
+  if (params.interests?.length) query.set('interests', params.interests.join(','));
+  if (params.days) query.set('days', String(params.days));
+  if (params.month) query.set('month', String(params.month));
+  if (params.budget) query.set('budget', params.budget);
+  if (params.travelParty) query.set('travel_party', params.travelParty);
+  if (params.accessibility?.length) query.set('accessibility', params.accessibility.join(','));
+  if (params.query) query.set('q', params.query);
+  if (params.limit) query.set('limit', String(params.limit));
+  const suffix = query.toString();
+  return apiRequest<DestinationRecommendationsResult>(`/v1/guide/recommendations${suffix ? `?${suffix}` : ''}`);
+}
 
 /**
  * Uploads a captured photo to the camera-based landmark ID endpoint

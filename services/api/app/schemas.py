@@ -949,6 +949,25 @@ class KnowledgeSearchResponse(BaseModel):
     provenance: str = "verified"
 
 
+class DestinationRecommendationOut(BaseModel):
+    placeId: uuid.UUID
+    name: str
+    city: str
+    fact: str
+    score: float
+    scoreBreakdown: dict
+    experienceTags: list[str]
+    source: KnowledgeCitationOut
+    tradeoffs: list[str] = Field(default_factory=list)
+
+
+class DestinationRecommendationsResponse(BaseModel):
+    results: list[DestinationRecommendationOut]
+    profile: dict
+    month: int | None = None
+    provenance: str = "reviewed"
+
+
 class ZennyVoiceTurnResponse(BaseModel):
     sessionId: str
     interactionId: uuid.UUID | None = None
