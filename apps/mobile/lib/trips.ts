@@ -41,6 +41,20 @@ export type GenerateItineraryResult = {
 export type TripTimeline = {
   trip: Trip;
   days: ItineraryDay[];
+  bookings: TripBooking[];
+  offline?: boolean;
+};
+
+export type TripBooking = {
+  id: string;
+  kind: 'transport' | 'stay' | 'activity' | 'service';
+  title: string;
+  provider: string;
+  startsAt: string | null;
+  endsAt: string | null;
+  reference: string | null;
+  status: 'pending' | 'confirmed' | 'cancelled';
+  deepLink: string | null;
 };
 
 export type CreateTripInput = {
@@ -78,10 +92,23 @@ export function generateItinerary(tripId: string): Promise<GenerateItineraryResu
   return apiRequest<GenerateItineraryResult>(`/v1/trips/${tripId}/generate-itinerary`, { method: 'POST' });
 }
 
+export function addTripBooking(tripId: string, booking: Omit<TripBooking, 'id'>): Promise<TripBooking> {
+  return apiRequest<TripBooking>(`/v1/trips/${tripId}/bookings`, { method: 'POST', body: booking });
+}
+
 export function requestOnboardingCall(input: {
   phoneNumber: string;
   callConsent: true;
   recordingConsent?: boolean;
 }): Promise<OnboardingCall> {
   return apiRequest<OnboardingCall>('/v1/onboarding/calls', { method: 'POST', body: input });
+}
+
+export function getOnboardingConfig(): Promise<{
+  ready: boolean;
+  missing: string[];
+  recordingEnabled: boolean;
+  publicBaseUrlSet: boolean;
+}> {
+  return apiRequest('/v1/onboarding/config');
 }
