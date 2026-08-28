@@ -52,6 +52,8 @@ type ZentripState = {
   // -- local profile preferences used to personalize the home/explore surfaces --
   travelerPreferences: TravelerPreferences;
   setTravelerPreferences: (preferences: Partial<TravelerPreferences>) => void;
+  trustedContact: string;
+  setTrustedContact: (value: string) => void;
 };
 
 export const useStore = create<ZentripState>()(
@@ -76,6 +78,8 @@ export const useStore = create<ZentripState>()(
       },
       setTravelerPreferences: (preferences) =>
         set((state) => ({ travelerPreferences: { ...state.travelerPreferences, ...preferences } })),
+      trustedContact: '',
+      setTrustedContact: (value) => set({ trustedContact: value }),
     }),
     {
       name: 'zentrip-store',
@@ -86,6 +90,7 @@ export const useStore = create<ZentripState>()(
         user: state.user,
         activeTripId: state.activeTripId,
         travelerPreferences: state.travelerPreferences,
+        trustedContact: state.trustedContact,
       }),
     }
   )
