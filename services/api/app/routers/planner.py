@@ -136,6 +136,9 @@ async def _planner_context(
     constraints["budgetLevel"] = trip.budget_level
     constraints["wakeTime"] = profile.get("wakeTime", "08:00")
     constraints["sleepTime"] = profile.get("sleepTime", "22:30")
+    constraints["tripDays"] = (trip.end_date - trip.start_date).days + 1
+    constraints["travelMonth"] = trip.start_date.month
+    constraints["originCountry"] = trip.origin_country
 
     rules = (
         await db.scalars(

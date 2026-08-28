@@ -24,14 +24,19 @@ DEFAULT_PROFILE: dict[str, Any] = {
 }
 
 _INTEREST_KEYWORDS = {
-    "culture": ("culture", "temple", "museum", "heritage", "palace", "festival"),
+    "culture": ("culture", "temple", "museum", "heritage", "palace", "festival", "art", "arts"),
     "history": ("history", "fort", "monument", "tomb", "stupa", "archaeological"),
     "architecture": ("architecture", "palace", "fort", "mosque", "temple", "caves"),
-    "food": ("food", "market", "cuisine", "restaurant", "langar", "street"),
-    "nature": ("nature", "park", "lake", "garden", "wildlife", "waterfall", "valley"),
-    "adventure": ("trek", "adventure", "safari", "rafting", "mountain", "desert"),
+    "food": ("food", "market", "cuisine", "restaurant", "langar", "street", "coffee", "tea"),
+    "nature": ("nature", "park", "lake", "garden", "wildlife", "waterfall", "valley", "forest"),
+    "wildlife": ("wildlife", "safari", "rhino", "tiger", "lion", "mangrove"),
+    "adventure": ("trek", "adventure", "safari", "rafting", "mountain", "desert", "cave"),
     "spiritual": ("temple", "gurdwara", "church", "mosque", "pilgrimage", "ashram"),
-    "shopping": ("market", "bazaar", "shopping", "craft", "textile"),
+    "shopping": ("market", "bazaar", "shopping", "craft", "textile", "artisan"),
+    "beach": ("beach", "coast", "coastal", "island", "marine", "sea"),
+    "wellness": ("wellness", "yoga", "ashram", "spa", "slow travel", "relax"),
+    "photography": ("photo", "photography", "sunset", "sunrise", "viewpoint", "scenic"),
+    "quiet": ("quiet", "peaceful", "uncrowded", "less crowded", "slow"),
 }
 
 
@@ -81,11 +86,92 @@ def merge_profile(profile: dict[str, Any] | None, preference_statements: list[st
 def _inferred_tags(candidate: dict[str, Any]) -> set[str]:
     profile = candidate.get("experienceProfile") or {}
     tags = {_text(item) for item in profile.get("tags", [])} if isinstance(profile, dict) else set()
+    destination_profile = profile.get("destinationProfile", {}) if isinstance(profile, dict) else {}
+    if isinstance(destination_profile, dict):
+        tags.update(_text(item) for item in destination_profile.get("tags", []))
+        destination_kind = _text(destination_profile.get("destinationKind"))
+        if destination_kind:
+            tags.add(destination_kind)
     corpus = f"{candidate.get('name', '')} {candidate.get('fact', '')}".casefold()
     for interest, keywords in _INTEREST_KEYWORDS.items():
         if any(keyword in corpus for keyword in keywords):
             tags.add(interest)
     return tags
+
+
+_MONTHS = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+}
+
+
+def _season_months(value: Any) -> set[int]:
+    raw = _text(value).replace("–", "-").replace("—", "-")
+    found = [_MONTHS[name] for name in _MONTHS if name in raw]
+    if len(found) < 2:
+        return set(found)
+    start, end = found[0], found[1]
+    if start <= end:
+        return set(range(start, end + 1))
+    return set(range(start, 13)) | set(range(1, end + 1))
+
+
+def _season_fit(candidate: dict[str, Any], constraints: dict[str, Any]) -> float:
+    month = constraints.get("travelMonth")
+    if not month:
+        return 0.75
+    try:
+        month = int(month)
+    except (TypeError, ValueError):
+        return 0.75
+    experience = candidate.get("experienceProfile") or {}
+    destination = experience.get("destinationProfile", {}) if isinstance(experience, dict) else {}
+    season_values = []
+    if isinstance(destination, dict):
+        season_values.extend(destination.get("bestSeasons", []))
+    if isinstance(experience, dict) and experience.get("seasonality"):
+        season_values.append(experience["seasonality"])
+    months = set().union(*(_season_months(value) for value in season_values)) if season_values else set()
+    return 1.0 if month in months else 0.45 if months else 0.75
+
+
+def _trip_length_fit(candidate: dict[str, Any], constraints: dict[str, Any]) -> float:
+    trip_days = constraints.get("tripDays")
+    destination = ((candidate.get("experienceProfile") or {}).get("destinationProfile") or {})
+    if not trip_days or not isinstance(destination, dict):
+        return 0.75
+    try:
+        trip_days = int(trip_days)
+        minimum = int(destination.get("typicalStayMinDays", 1))
+        maximum = int(destination.get("typicalStayMaxDays", max(minimum, 3)))
+    except (TypeError, ValueError):
+        return 0.75
+    if minimum <= trip_days <= maximum:
+        return 1.0
+    distance = minimum - trip_days if trip_days < minimum else trip_days - maximum
+    return max(0.35, 1.0 - 0.2 * distance)
+
+
+def _party_fit(candidate: dict[str, Any], profile: dict[str, Any]) -> float:
+    party = _text(profile.get("travelParty")) or "solo"
+    destination = ((candidate.get("experienceProfile") or {}).get("destinationProfile") or {})
+    accessibility = destination.get("accessibility", {}) if isinstance(destination, dict) else {}
+    if not isinstance(accessibility, dict):
+        return 0.75
+    rating = _text(accessibility.get(party))
+    return {"high": 1.0, "medium": 0.78, "low": 0.4}.get(rating, 0.75)
+
+
+def _accessibility_fit(candidate: dict[str, Any], profile: dict[str, Any]) -> float:
+    requested = set(_unique_strings(profile.get("accessibility")))
+    if not requested:
+        return 0.85
+    destination = ((candidate.get("experienceProfile") or {}).get("destinationProfile") or {})
+    accessibility = destination.get("accessibility", {}) if isinstance(destination, dict) else {}
+    wheelchair_level = _text(accessibility.get("wheelchair")) if isinstance(accessibility, dict) else ""
+    if any(term in requested for term in {"wheelchair", "step_free", "step-free", "mobility"}):
+        return {"high": 1.0, "medium": 0.65, "limited": 0.2}.get(wheelchair_level, 0.45)
+    return 0.75
 
 
 def _matches_term(candidate: dict[str, Any], term: str) -> bool:
@@ -116,6 +202,10 @@ def score_candidate(candidate: dict[str, Any], profile: dict[str, Any], constrai
     walking = _text(profile.get("walkingTolerance")) or "medium"
     walking_level = _text(experience.get("walkingLevel")) or "medium"
     walking_fit = {"low": {"low": 1.0, "medium": 0.65, "high": 0.25}, "medium": {"low": 0.9, "medium": 1.0, "high": 0.7}, "high": {"low": 0.8, "medium": 0.95, "high": 1.0}}.get(walking, {}).get(walking_level, 0.75)
+    season_fit = _season_fit(candidate, constraints)
+    trip_length_fit = _trip_length_fit(candidate, constraints)
+    party_fit = _party_fit(candidate, profile)
+    accessibility_fit = _accessibility_fit(candidate, profile)
 
     budget = _text(constraints.get("budgetLevel")) or "mixed"
     item_budget = _text(experience.get("budgetLevel")) or "medium"
@@ -140,12 +230,29 @@ def score_candidate(candidate: dict[str, Any], profile: dict[str, Any], constrai
         elif "walk" in reason and walking_level == "high":
             feedback_penalty += 0.15
 
-    score = max(0.0, round(0.38 * interest_fit + 0.24 * pace_fit + 0.18 * walking_fit + 0.20 * budget_fit + feedback_boost - avoid_penalty - feedback_penalty, 4))
+    score = max(0.0, round(
+        0.27 * interest_fit
+        + 0.16 * pace_fit
+        + 0.13 * walking_fit
+        + 0.13 * budget_fit
+        + 0.12 * season_fit
+        + 0.08 * trip_length_fit
+        + 0.06 * party_fit
+        + 0.05 * accessibility_fit
+        + feedback_boost
+        - avoid_penalty
+        - feedback_penalty,
+        4,
+    ))
     breakdown = {
         "interestFit": round(interest_fit, 3),
         "paceFit": round(pace_fit, 3),
         "walkingFit": round(walking_fit, 3),
         "budgetFit": round(budget_fit, 3),
+        "seasonFit": round(season_fit, 3),
+        "tripLengthFit": round(trip_length_fit, 3),
+        "partyFit": round(party_fit, 3),
+        "accessibilityFit": round(accessibility_fit, 3),
         "avoidPenalty": round(avoid_penalty, 3),
         "feedbackPenalty": round(feedback_penalty, 3),
         "feedbackBoost": round(feedback_boost, 3),
@@ -157,6 +264,26 @@ def rank_candidates(candidates: list[dict[str, Any]], profile: dict[str, Any], c
     avoid = _unique_strings(constraints.get("avoid"))
     ranked = [score_candidate(candidate, profile, constraints) for candidate in candidates if not any(_matches_term(candidate, term) for term in avoid)]
     return sorted(ranked, key=lambda candidate: (-float(candidate["plannerScore"]), str(candidate.get("name", ""))))
+
+
+def select_diverse_recommendations(ranked: list[dict[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
+    """Return high-fit suggestions without filling the list with one city or theme."""
+    selected: list[dict[str, Any]] = []
+    seen_cities: set[str] = set()
+    seen_kinds: set[str] = set()
+    for candidate in ranked:
+        profile = candidate.get("experienceProfile") or {}
+        destination = profile.get("destinationProfile", {}) if isinstance(profile, dict) else {}
+        kind = _text(destination.get("destinationKind")) if isinstance(destination, dict) else ""
+        city = _text(candidate.get("city"))
+        if len(selected) < limit and (city not in seen_cities or kind not in seen_kinds):
+            selected.append(candidate)
+            seen_cities.add(city)
+            if kind:
+                seen_kinds.add(kind)
+        if len(selected) >= limit:
+            return selected
+    return selected
 
 
 def _parse_time(value: Any) -> int | None:
