@@ -10,7 +10,7 @@ from app.db import get_db
 from app.deps import get_current_user
 from app.llm import LLMNotConfiguredError, LLMProviderError, generate_itinerary_days, provider_configuration_error
 from app.knowledge_ops import merge_operational_profile
-from app.models import DestinationProfile, ItineraryDay, KnowledgeClaim, KnowledgeEntity, KnowledgeObservation, KnowledgeSource, Trip, TripBooking, User
+from app.models import DestinationProfile, ItineraryDay, KnowledgeAlias, KnowledgeClaim, KnowledgeEntity, KnowledgeObservation, KnowledgeSource, Trip, TripBooking, User
 from app.schemas import (
     ActivityOut,
     GenerateItineraryResponse,
@@ -79,7 +79,13 @@ async def _load_candidate_places(db: AsyncSession, cities: list[str] | None) -> 
         .join(KnowledgeSource, KnowledgeSource.id == KnowledgeClaim.source_id)
         .where(
             KnowledgeEntity.status == "published",
-            KnowledgeEntity.entity_type.in_(["monument", "activity"]),
+            KnowledgeEntity.entity_type.notin_(
+                [
+                    "monument_feature", "city_guide", "visa_info", "arrival_info", "safety_info",
+                    "health_info", "transport_info", "payment_info", "connectivity_info", "culture_info",
+                    "food_info", "planning_info",
+                ]
+            ),
             KnowledgeClaim.verification_status == "published",
             KnowledgeSource.status == "active",
         )
@@ -112,6 +118,11 @@ async def _load_candidate_places(db: AsyncSession, cities: list[str] | None) -> 
             )
         ).all()
         profiles_by_entity = {profile.entity_id: profile for profile in profiles}
+    aliases_by_entity: dict[uuid.UUID, list[str]] = {}
+    if entity_ids:
+        aliases = (await db.scalars(select(KnowledgeAlias).where(KnowledgeAlias.entity_id.in_(entity_ids)))).all()
+        for alias in aliases:
+            aliases_by_entity.setdefault(alias.entity_id, []).append(alias.alias)
     candidates: dict[str, dict] = {}
     for entity, claim, source in rows:
         # The itinerary tool accepts one fact per place today. Prefer the newest
@@ -120,6 +131,14 @@ async def _load_candidate_places(db: AsyncSession, cities: list[str] | None) -> 
             entity.experience_profile,
             observations_by_entity.get(entity.id, []),
         )
+        # Older regional catalog entries used shorter field names. Normalize them
+        # once at the retrieval boundary so every ranker sees one schema.
+        if "seasonality" not in experience_profile and experience_profile.get("season"):
+            experience_profile["seasonality"] = experience_profile["season"]
+        if "walkingLevel" not in experience_profile and experience_profile.get("walking"):
+            experience_profile["walkingLevel"] = experience_profile["walking"]
+        if "planningNotes" not in experience_profile and experience_profile.get("notes"):
+            experience_profile["planningNotes"] = experience_profile["notes"]
         profile = profiles_by_entity.get(entity.id)
         if profile is not None:
             experience_profile["destinationProfile"] = {
@@ -143,6 +162,7 @@ async def _load_candidate_places(db: AsyncSession, cities: list[str] | None) -> 
                 "placeId": str(entity.id),
                 "name": entity.name,
                 "city": entity.city,
+                "aliases": aliases_by_entity.get(entity.id, []),
                 "fact": claim.claim,
                 "claimId": str(claim.id),
                 "source": source.name,

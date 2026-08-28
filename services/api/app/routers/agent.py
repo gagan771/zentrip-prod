@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,7 +34,13 @@ class AgentMessageResponse(BaseModel):
 async def send_message(
     body: AgentMessageRequest, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> AgentMessageResponse:
-    result = await handle_message(user, body.text, db, session_id=body.sessionId)
+    trip_id = None
+    if body.tripId:
+        try:
+            trip_id = uuid.UUID(body.tripId)
+        except ValueError:
+            pass
+    result = await handle_message(user, body.text, db, session_id=body.sessionId, trip_id=trip_id)
     return AgentMessageResponse(
         interactionId=str(result.interaction_id) if result.interaction_id else None,
         intent=result.intent,

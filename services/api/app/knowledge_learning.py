@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Iterable
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import KnowledgeGap, KnowledgeInteraction, User
@@ -54,6 +55,8 @@ def _gap_required(*, intent: str, result_count: int, citation_count: int, confid
 
 
 def _outcome(*, intent: str, result_count: int, citation_count: int, confidence: str) -> str:
+    if intent not in {"guide", "payment", "safety"}:
+        return "answered"
     if result_count == 0:
         return "no_match"
     if _gap_required(intent=intent, result_count=result_count, citation_count=citation_count, confidence=confidence):
@@ -70,12 +73,14 @@ async def _get_or_create_gap(
     no_match: bool = False,
     negative_feedback: bool = False,
 ) -> KnowledgeGap:
-    gap = await db.scalar(select(KnowledgeGap).where(KnowledgeGap.normalized_query == normalized_query))
+    gap_key = f"{intent}:{normalized_query}"[:540]
+    gap = await db.scalar(select(KnowledgeGap).where(KnowledgeGap.gap_key == gap_key))
     now = datetime.utcnow()
     if gap is None:
         initial_no_match = 1 if no_match else 0
         initial_negative_feedback = 1 if negative_feedback else 0
         gap = KnowledgeGap(
+            gap_key=gap_key,
             normalized_query=normalized_query,
             example_query=example_query,
             intent=intent,
@@ -149,7 +154,15 @@ async def record_knowledge_interaction(
             intent=intent,
             no_match=result_count == 0,
         )
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        # Two travelers can ask the same new question at once. Another request
+        # wins the unique gap insert; preserve this interaction and let that row
+        # carry the aggregate rather than dropping both records on rollback.
+        await db.rollback()
+        db.add(interaction)
+        await db.flush()
     return interaction
 
 

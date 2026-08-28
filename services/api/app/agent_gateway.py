@@ -28,7 +28,7 @@ from app.knowledge_learning import record_knowledge_interaction
 from app.knowledge_service import search_published_claims
 from app.llm import LLMNotConfiguredError, LLMProviderError
 from app.phrasebook import _translation_reply
-from app.models import RiskPattern, Trip, TripMemoryNote, User, UserPreference
+from app.models import RiskPattern, TravelerProfile, Trip, TripMemoryNote, User, UserPreference
 from app.redis_client import redis
 from app.social_service import find_buddy_matches, find_tonight_events, parse_buddy_request
 from app.spoken import spoken_preview
@@ -84,6 +84,8 @@ async def build_context(user: User, db: AsyncSession | None = None, trip_id: uui
         "country": user.country,
         "tripMemory": [],
         "preferences": [],
+        "travelerProfile": {},
+        "tripContext": None,
     }
     if db is None:
         return context
@@ -95,6 +97,12 @@ async def build_context(user: User, db: AsyncSession | None = None, trip_id: uui
         trip_query = trip_query.order_by(Trip.created_at.desc()).limit(1)
     trip = (await db.execute(trip_query)).scalar_one_or_none()
     if trip is not None:
+        context["tripContext"] = {
+            "cities": trip.cities,
+            "startDate": trip.start_date.isoformat(),
+            "endDate": trip.end_date.isoformat(),
+            "budgetLevel": trip.budget_level,
+        }
         notes = (
             await db.execute(
                 select(TripMemoryNote)
@@ -113,6 +121,8 @@ async def build_context(user: User, db: AsyncSession | None = None, trip_id: uui
         )
     ).scalars().all()
     context["preferences"] = [preference.statement for preference in preferences]
+    traveler_profile = await db.scalar(select(TravelerProfile).where(TravelerProfile.user_id == user.id))
+    context["travelerProfile"] = traveler_profile.preferences if traveler_profile else {}
     return context
 
 
@@ -122,17 +132,29 @@ async def _recommendation_reply(db: AsyncSession, text: str, context: dict | Non
 
     candidates = await _load_candidate_places(db, None)
     preference_statements = list((context or {}).get("preferences", []))
-    profile = merge_profile(None, [text, *preference_statements])
+    profile = merge_profile((context or {}).get("travelerProfile") or {}, [text, *preference_statements])
     lowered = text.casefold()
     budget = "luxury" if any(term in lowered for term in ("luxury", "premium", "splurge")) else "backpacker" if any(term in lowered for term in ("cheap", "budget", "backpack")) else "mixed"
     trip_days = None
     duration_match = re.search(r"\b(\d+)\s*day", lowered)
     if duration_match:
         trip_days = int(duration_match.group(1))
+    trip_context = (context or {}).get("tripContext") or {}
+    travel_month = date.today().month
+    if trip_context.get("startDate"):
+        try:
+            travel_month = date.fromisoformat(trip_context["startDate"]).month
+        except ValueError:
+            pass
     ranked = rank_candidates(
         candidates,
         profile,
-        {"budgetLevel": budget, "tripDays": trip_days, "travelMonth": date.today().month, "avoid": ["crowded"] if "avoid crowd" in lowered else []},
+        {
+            "budgetLevel": trip_context.get("budgetLevel") or budget,
+            "tripDays": trip_days or ((date.fromisoformat(trip_context["endDate"]) - date.fromisoformat(trip_context["startDate"])).days + 1 if trip_context.get("startDate") and trip_context.get("endDate") else None),
+            "travelMonth": travel_month,
+            "avoid": ["crowded"] if "avoid crowd" in lowered else [],
+        },
     )
     selected = select_diverse_recommendations(ranked, limit=5)
     if not selected:
@@ -528,7 +550,7 @@ async def handle_message(
 ) -> AgentReply:
     intent = classify_intent(text)
     policy_tier = tag_policy(intent)
-    context = await build_context(user, db, trip_id=trip_id) if not voice else {"preferences": []}
+    context = await build_context(user, db, trip_id=trip_id) if db is not None and (not voice or intent == "recommendation") else {"preferences": []}
 
     if voice:
         asyncio.create_task(append_session_message(user.id, "user", text, session_id))

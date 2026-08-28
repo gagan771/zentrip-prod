@@ -70,6 +70,7 @@ class TravelerProfileInput(BaseModel):
     travelParty: str = Field(default="solo", pattern="^(solo|couple|family|group)$")
     accessibility: list[str] = Field(default_factory=list, max_length=10)
     foodPreferences: list[str] = Field(default_factory=list, max_length=20)
+    avoidInterests: list[str] = Field(default_factory=list, max_length=20)
 
 
 class TravelerProfileOut(TravelerProfileInput):

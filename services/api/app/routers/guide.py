@@ -6,7 +6,9 @@ list drawn from the Knowledge Base; every fact in the response comes from a
 published KnowledgeClaim row for the matched entity, never from the vision model.
 """
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from datetime import date
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,39 +33,49 @@ async def recommend_destinations(
     days: int | None = None,
     month: int | None = None,
     budget: str = "mixed",
-    travel_party: str = "solo",
+    travel_party: str | None = None,
     accessibility: str | None = None,
     q: str | None = None,
-    limit: int = 5,
+    limit: int = Query(default=5, ge=1, le=10),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> DestinationRecommendationsResponse:
     """Return diverse, explainable destination matches from reviewed claims."""
-    del user
+    from app.agent_gateway import build_context
     from app.routers.trips import _load_candidate_places
 
     if month is not None and not 1 <= month <= 12:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="month must be between 1 and 12")
     if budget not in {"backpacker", "comfort", "luxury", "mixed"}:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unsupported budget")
-    if travel_party not in {"solo", "couple", "family", "group"}:
+    if travel_party is not None and travel_party not in {"solo", "couple", "family", "group"}:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unsupported travel party")
-    if not 1 <= limit <= 10:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="limit must be between 1 and 10")
 
+    context = await build_context(user, db)
+    stored_profile = context.get("travelerProfile") or {}
+    requested_interests = [item.strip() for item in (interests or "").split(",") if item.strip()]
+    requested_accessibility = [item.strip() for item in (accessibility or "").split(",") if item.strip()]
+    profile_input = {**stored_profile}
+    if interests is not None:
+        profile_input["interests"] = requested_interests
+    if travel_party is not None:
+        profile_input["travelParty"] = travel_party
+    if accessibility is not None:
+        profile_input["accessibility"] = requested_accessibility
     profile = merge_profile(
-        {
-            "interests": [item.strip() for item in (interests or "").split(",") if item.strip()],
-            "travelParty": travel_party,
-            "accessibility": [item.strip() for item in (accessibility or "").split(",") if item.strip()],
-        },
+        profile_input,
         [q] if q else [],
     )
+    trip_context = context.get("tripContext") or {}
     candidates = await _load_candidate_places(db, None)
     ranked = rank_candidates(
         candidates,
         profile,
-        {"budgetLevel": budget, "tripDays": days, "travelMonth": month},
+        {
+            "budgetLevel": trip_context.get("budgetLevel") or budget,
+            "tripDays": days or ((date.fromisoformat(trip_context["endDate"]) - date.fromisoformat(trip_context["startDate"])).days + 1 if trip_context.get("startDate") and trip_context.get("endDate") else None),
+            "travelMonth": month or (date.fromisoformat(trip_context["startDate"]).month if trip_context.get("startDate") else None),
+        },
     )
     selected = select_diverse_recommendations(ranked, limit=limit)
     results = []

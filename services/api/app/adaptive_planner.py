@@ -22,6 +22,7 @@ DEFAULT_PROFILE: dict[str, Any] = {
     "travelParty": "solo",
     "accessibility": [],
     "foodPreferences": [],
+    "avoidInterests": [],
 }
 
 _INTEREST_KEYWORDS = {
@@ -58,6 +59,19 @@ def _unique_strings(values: Any) -> list[str]:
     return result
 
 
+def _positive_keyword(statements: str, keyword: str) -> bool:
+    """Match a preference only when nearby language does not negate it."""
+    start = 0
+    while True:
+        index = statements.find(keyword, start)
+        if index < 0:
+            return False
+        prefix = statements[max(0, index - 28):index]
+        if not re.search(r"\b(?:not|don't|dont|avoid|no|without|dislike|hate)\b", prefix):
+            return True
+        start = index + len(keyword)
+
+
 def merge_profile(profile: dict[str, Any] | None, preference_statements: list[str] | None = None) -> dict[str, Any]:
     """Merge structured preferences with explicit legacy preference statements."""
     merged = {**DEFAULT_PROFILE, **(profile or {})}
@@ -66,10 +80,14 @@ def merge_profile(profile: dict[str, Any] | None, preference_statements: list[st
 
     statements = " ".join(_text(item) for item in (preference_statements or []))
     interest_terms = set(merged["interests"])
+    avoid_terms = set(_unique_strings(merged.get("avoidInterests")))
     for interest, keywords in _INTEREST_KEYWORDS.items():
-        if any(keyword in statements for keyword in keywords):
+        if any(_positive_keyword(statements, keyword) for keyword in keywords):
             interest_terms.add(interest)
+        elif any(keyword in statements for keyword in keywords):
+            avoid_terms.add(interest)
     merged["interests"] = sorted(interest_terms)
+    merged["avoidInterests"] = sorted(avoid_terms)
 
     if any(term in statements for term in ("relaxed", "slow", "not packed")):
         merged["pace"] = "relaxed"
@@ -93,7 +111,8 @@ def _inferred_tags(candidate: dict[str, Any]) -> set[str]:
         destination_kind = _text(destination_profile.get("destinationKind"))
         if destination_kind:
             tags.add(destination_kind)
-    corpus = f"{candidate.get('name', '')} {candidate.get('fact', '')}".casefold()
+    aliases = candidate.get("aliases") if isinstance(candidate.get("aliases"), list) else []
+    corpus = f"{candidate.get('name', '')} {candidate.get('fact', '')} {' '.join(str(alias) for alias in aliases)}".casefold()
     for interest, keywords in _INTEREST_KEYWORDS.items():
         if any(keyword in corpus for keyword in keywords):
             tags.add(interest)
@@ -210,9 +229,14 @@ def score_candidate(candidate: dict[str, Any], profile: dict[str, Any], constrai
 
     budget = _text(constraints.get("budgetLevel")) or "mixed"
     item_budget = _text(experience.get("budgetLevel")) or "medium"
-    budget_fit = 1.0 if budget in ("mixed", item_budget) else 0.8 if {budget, item_budget} <= {"comfort", "medium"} else 0.65
+    budget_band = {"backpacker": "low", "comfort": "medium", "luxury": "high"}.get(budget, budget)
+    if budget_band == "mixed" or item_budget == "mixed":
+        budget_fit = 0.85
+    else:
+        budget_distance = abs({"low": 0, "medium": 1, "high": 2}.get(budget_band, 1) - {"low": 0, "medium": 1, "high": 2}.get(item_budget, 1))
+        budget_fit = {0: 1.0, 1: 0.72, 2: 0.45}.get(budget_distance, 0.65)
 
-    avoid = _unique_strings(constraints.get("avoid"))
+    avoid = _unique_strings(constraints.get("avoid")) + _unique_strings(profile.get("avoidInterests"))
     avoid_penalty = 0.0 if not any(_matches_term(candidate, term) for term in avoid) else 1.0
     feedback_penalty = 0.0
     feedback_boost = 0.0
@@ -262,7 +286,7 @@ def score_candidate(candidate: dict[str, Any], profile: dict[str, Any], constrai
 
 
 def rank_candidates(candidates: list[dict[str, Any]], profile: dict[str, Any], constraints: dict[str, Any]) -> list[dict[str, Any]]:
-    avoid = _unique_strings(constraints.get("avoid"))
+    avoid = _unique_strings(constraints.get("avoid")) + _unique_strings(profile.get("avoidInterests"))
     ranked = [score_candidate(candidate, profile, constraints) for candidate in candidates if not any(_matches_term(candidate, term) for term in avoid)]
     return sorted(ranked, key=lambda candidate: (-float(candidate["plannerScore"]), str(candidate.get("name", ""))))
 

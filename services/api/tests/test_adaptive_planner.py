@@ -50,6 +50,13 @@ class AdaptivePlannerTests(unittest.TestCase):
         self.assertEqual(profile["interests"].count("food"), 1)
         self.assertIn("train", profile["transportPreferences"])
 
+    def test_negated_interest_is_not_added_as_a_positive_preference(self) -> None:
+        profile = merge_profile({}, ["I don't like temples and want to avoid beaches"])
+        self.assertNotIn("spiritual", profile["interests"])
+        self.assertNotIn("beach", profile["interests"])
+        self.assertIn("spiritual", profile["avoidInterests"])
+        self.assertIn("beach", profile["avoidInterests"])
+
     def test_matching_experience_ranks_first(self) -> None:
         ranked = rank_candidates(self.candidates, {"interests": ["food"], "pace": "relaxed", "walkingTolerance": "medium"}, {"budgetLevel": "mixed"})
         self.assertEqual(ranked[0]["name"], "Jaipur Food Market")
