@@ -23,6 +23,7 @@ DEFAULT_PROFILE: dict[str, Any] = {
     "accessibility": [],
     "foodPreferences": [],
     "avoidInterests": [],
+    "preferredRegions": [],
 }
 
 _INTEREST_KEYWORDS = {
@@ -39,6 +40,15 @@ _INTEREST_KEYWORDS = {
     "wellness": ("wellness", "yoga", "ashram", "spa", "slow travel", "relax"),
     "photography": ("photo", "photography", "sunset", "sunrise", "viewpoint", "scenic"),
     "quiet": ("quiet", "peaceful", "uncrowded", "less crowded", "slow"),
+}
+
+_REGION_HINTS = {
+    "North": ("north india", "north indian", "north"),
+    "South": ("south india", "south indian", "south"),
+    "East": ("east india", "east indian", "east"),
+    "West": ("west india", "west indian", "west"),
+    "Central": ("central india", "central indian", "central"),
+    "North East": ("north east india", "northeast india", "north east", "northeast"),
 }
 
 
@@ -59,17 +69,23 @@ def _unique_strings(values: Any) -> list[str]:
     return result
 
 
+def _keyword_pattern(keyword: str) -> str:
+    """Match a phrase and common English plural forms without substring false positives."""
+    parts = keyword.split()
+    if not parts:
+        return r"(?!)"
+    last = re.escape(parts[-1]) + r"(?:s|es)?"
+    return rf"(?<!\w){re.escape(' '.join(parts[:-1]) + (' ' if len(parts) > 1 else ''))}{last}(?!\w)"
+
+
 def _positive_keyword(statements: str, keyword: str) -> bool:
     """Match a preference only when nearby language does not negate it."""
-    start = 0
-    while True:
-        index = statements.find(keyword, start)
-        if index < 0:
-            return False
+    for match in re.finditer(_keyword_pattern(keyword), statements):
+        index = match.start()
         prefix = statements[max(0, index - 28):index]
         if not re.search(r"\b(?:not|don't|dont|avoid|no|without|dislike|hate)\b", prefix):
             return True
-        start = index + len(keyword)
+    return False
 
 
 def merge_profile(profile: dict[str, Any] | None, preference_statements: list[str] | None = None) -> dict[str, Any]:
@@ -77,6 +93,10 @@ def merge_profile(profile: dict[str, Any] | None, preference_statements: list[st
     merged = {**DEFAULT_PROFILE, **(profile or {})}
     for key in ("interests", "transportPreferences", "accessibility", "foodPreferences"):
         merged[key] = _unique_strings(merged.get(key))
+    merged["preferredRegions"] = [
+        item for item in _unique_strings(merged.get("preferredRegions"))
+        if item.title() in _REGION_HINTS
+    ]
 
     statements = " ".join(_text(item) for item in (preference_statements or []))
     interest_terms = set(merged["interests"])
@@ -84,10 +104,17 @@ def merge_profile(profile: dict[str, Any] | None, preference_statements: list[st
     for interest, keywords in _INTEREST_KEYWORDS.items():
         if any(_positive_keyword(statements, keyword) for keyword in keywords):
             interest_terms.add(interest)
-        elif any(keyword in statements for keyword in keywords):
+        elif any(re.search(_keyword_pattern(keyword), statements) for keyword in keywords):
             avoid_terms.add(interest)
     merged["interests"] = sorted(interest_terms)
     merged["avoidInterests"] = sorted(avoid_terms)
+    regions = set(merged["preferredRegions"])
+    non_compound_region_statements = re.sub(r"\bnorth[\s-]?east\b", " ", statements)
+    for region, hints in _REGION_HINTS.items():
+        source = statements if region == "North East" else non_compound_region_statements
+        if any(_positive_keyword(source, hint) for hint in hints):
+            regions.add(region)
+    merged["preferredRegions"] = sorted(regions)
 
     if any(term in statements for term in ("relaxed", "slow", "not packed")):
         merged["pace"] = "relaxed"
@@ -114,7 +141,7 @@ def _inferred_tags(candidate: dict[str, Any]) -> set[str]:
     aliases = candidate.get("aliases") if isinstance(candidate.get("aliases"), list) else []
     corpus = f"{candidate.get('name', '')} {candidate.get('fact', '')} {' '.join(str(alias) for alias in aliases)}".casefold()
     for interest, keywords in _INTEREST_KEYWORDS.items():
-        if any(keyword in corpus for keyword in keywords):
+        if any(re.search(_keyword_pattern(keyword), corpus) for keyword in keywords):
             tags.add(interest)
     return tags
 
@@ -194,12 +221,33 @@ def _accessibility_fit(candidate: dict[str, Any], profile: dict[str, Any]) -> fl
     return 0.75
 
 
+def _region_fit(candidate: dict[str, Any], profile: dict[str, Any]) -> float:
+    requested = {item.title() for item in _unique_strings(profile.get("preferredRegions"))}
+    if not requested:
+        return 0.75
+    destination = ((candidate.get("experienceProfile") or {}).get("destinationProfile") or {})
+    actual = {str(destination.get("region", "")).title(), str(destination.get("state", "")).title()}
+    return 1.0 if requested & actual else 0.3
+
+
+def _freshness_fit(candidate: dict[str, Any]) -> float:
+    """Prefer candidates whose operational observations are still current."""
+    operational = ((candidate.get("experienceProfile") or {}).get("operational") or {})
+    if not isinstance(operational, dict) or not operational:
+        return 0.85
+    stale_count = sum(
+        1 for value in operational.values()
+        if isinstance(value, dict) and value.get("stale") is True
+    )
+    return max(0.4, 1.0 - 0.2 * stale_count)
+
+
 def _matches_term(candidate: dict[str, Any], term: str) -> bool:
     needle = _text(term)
     if not needle:
         return False
     corpus = f"{candidate.get('placeId', '')} {candidate.get('name', '')} {candidate.get('fact', '')}".casefold()
-    return needle in corpus or needle in _inferred_tags(candidate)
+    return bool(re.search(_keyword_pattern(needle), corpus)) or needle in _inferred_tags(candidate)
 
 
 def score_candidate(candidate: dict[str, Any], profile: dict[str, Any], constraints: dict[str, Any]) -> dict[str, Any]:
@@ -226,6 +274,8 @@ def score_candidate(candidate: dict[str, Any], profile: dict[str, Any], constrai
     trip_length_fit = _trip_length_fit(candidate, constraints)
     party_fit = _party_fit(candidate, profile)
     accessibility_fit = _accessibility_fit(candidate, profile)
+    region_fit = _region_fit(candidate, profile)
+    freshness_fit = _freshness_fit(candidate)
 
     budget = _text(constraints.get("budgetLevel")) or "mixed"
     item_budget = _text(experience.get("budgetLevel")) or "medium"
@@ -256,14 +306,16 @@ def score_candidate(candidate: dict[str, Any], profile: dict[str, Any], constrai
             feedback_penalty += 0.15
 
     score = max(0.0, round(
-        0.27 * interest_fit
-        + 0.16 * pace_fit
+        0.20 * interest_fit
+        + 0.15 * pace_fit
         + 0.13 * walking_fit
         + 0.13 * budget_fit
         + 0.12 * season_fit
         + 0.08 * trip_length_fit
         + 0.06 * party_fit
         + 0.05 * accessibility_fit
+        + 0.06 * region_fit
+        + 0.02 * freshness_fit
         + feedback_boost
         - avoid_penalty
         - feedback_penalty,
@@ -278,6 +330,8 @@ def score_candidate(candidate: dict[str, Any], profile: dict[str, Any], constrai
         "tripLengthFit": round(trip_length_fit, 3),
         "partyFit": round(party_fit, 3),
         "accessibilityFit": round(accessibility_fit, 3),
+        "regionFit": round(region_fit, 3),
+        "freshnessFit": round(freshness_fit, 3),
         "avoidPenalty": round(avoid_penalty, 3),
         "feedbackPenalty": round(feedback_penalty, 3),
         "feedbackBoost": round(feedback_boost, 3),
@@ -287,7 +341,38 @@ def score_candidate(candidate: dict[str, Any], profile: dict[str, Any], constrai
 
 def rank_candidates(candidates: list[dict[str, Any]], profile: dict[str, Any], constraints: dict[str, Any]) -> list[dict[str, Any]]:
     avoid = _unique_strings(constraints.get("avoid")) + _unique_strings(profile.get("avoidInterests"))
-    ranked = [score_candidate(candidate, profile, constraints) for candidate in candidates if not any(_matches_term(candidate, term) for term in avoid)]
+    eligible = [candidate for candidate in candidates if not any(_matches_term(candidate, term) for term in avoid)]
+    requested_regions = {item.title() for item in _unique_strings(profile.get("preferredRegions"))}
+    if requested_regions:
+        regional = [
+            candidate for candidate in eligible
+            if _region_fit(candidate, profile) >= 1.0
+        ]
+        # Regional intent is hard only when the catalog can satisfy it. This
+        # keeps emerging or sparse regions useful instead of returning nothing.
+        if regional:
+            eligible = regional
+    requested_interests = set(_unique_strings(profile.get("interests")))
+    if requested_interests:
+        interest_matched = [
+            candidate for candidate in eligible
+            if requested_interests & _inferred_tags(candidate)
+        ]
+        # Explicit interests are hard when the reviewed catalog can satisfy
+        # them; sparse or newly introduced interests still degrade gracefully.
+        if interest_matched:
+            eligible = interest_matched
+    requested_accessibility = set(_unique_strings(profile.get("accessibility")))
+    if requested_accessibility & {"wheelchair", "step_free", "step-free", "mobility"}:
+        accessible = [
+            candidate for candidate in eligible
+            if _accessibility_fit(candidate, profile) >= 0.65
+        ]
+        # Accessibility is a safety constraint when the reviewed catalog can
+        # satisfy it, but sparse catalogs still degrade gracefully.
+        if accessible:
+            eligible = accessible
+    ranked = [score_candidate(candidate, profile, constraints) for candidate in eligible]
     return sorted(ranked, key=lambda candidate: (-float(candidate["plannerScore"]), str(candidate.get("name", ""))))
 
 
@@ -318,6 +403,39 @@ def _parse_time(value: Any) -> int | None:
     except ValueError:
         return None
     return parsed.hour * 60 + parsed.minute
+
+
+_GROUNDING_STOP_WORDS = {
+    "a", "an", "and", "at", "best", "by", "day", "for", "from", "in", "is", "it",
+    "of", "on", "the", "this", "to", "trip", "visit", "your", "with",
+}
+
+
+def _reason_is_grounded(reason: str, candidate: dict[str, Any]) -> bool:
+    """Allow only reasons supported by the selected record or safe planning language."""
+    tokens = {
+        token for token in re.findall(r"[a-z0-9]+", _text(reason))
+        if len(token) >= 3 and token not in _GROUNDING_STOP_WORDS
+    }
+    if not tokens:
+        return True
+    experience = candidate.get("experienceProfile") or {}
+    destination = experience.get("destinationProfile", {}) if isinstance(experience, dict) else {}
+    corpus_parts = [candidate.get("name", ""), candidate.get("fact", ""), *sorted(_inferred_tags(candidate))]
+    if isinstance(destination, dict):
+        corpus_parts.extend([destination.get("destinationKind", ""), *destination.get("tags", [])])
+    supported = {
+        token for token in re.findall(r"[a-z0-9]+", _text(" ".join(str(part) for part in corpus_parts)))
+        if len(token) >= 3
+    }
+    safe_planning_terms = {
+        "accessible", "afternoon", "based", "balanced", "because", "calm", "chosen", "culture",
+        "early", "evening", "family", "fit", "food", "good", "heritage", "interest", "interests",
+        "leisure", "match", "matches", "morning", "nature", "option", "pace", "photography",
+        "preference", "preferences", "relaxed", "selected", "shopping", "slow", "spiritual", "stated",
+        "travel", "traveler", "travellers", "wildlife",
+    }
+    return tokens <= (supported | safe_planning_terms)
 
 
 def validate_generated_days(days: Any, trip: Any, candidates: list[dict[str, Any]], constraints: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -397,14 +515,19 @@ def validate_generated_days(days: Any, trip: Any, candidates: list[dict[str, Any
             if start < previous_end:
                 errors.append(f"overlapping activities on day {day_number}")
             previous_end = start + duration
+            activity = {
+                **raw_activity,
+                "placeId": place_id,
+                "placeName": candidate["name"],
+                "durationMinutes": duration,
+                "status": raw_activity.get("status", "planned"),
+            }
+            reason = str(raw_activity.get("reason", "")).strip()
+            if reason and not _reason_is_grounded(reason, candidate):
+                warnings.append(f"day {day_number} reason was replaced because it was not grounded in the selected place")
+                activity["reason"] = "Selected from reviewed knowledge for your trip preferences."
             activities.append(
-                {
-                    **raw_activity,
-                    "placeId": place_id,
-                    "placeName": candidate["name"],
-                    "durationMinutes": duration,
-                    "status": raw_activity.get("status", "planned"),
-                }
+                activity
             )
         validated.append({"day": day_number, "city": city, "activities": activities})
 

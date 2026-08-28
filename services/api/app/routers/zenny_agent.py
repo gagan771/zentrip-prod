@@ -76,8 +76,10 @@ async def voice_status(user: User = Depends(get_current_user)) -> ZennyVoiceStat
     return ZennyVoiceStatusResponse(
         agentReady=voice_agent_ready(),
         liveSttReady=settings.live_stt_ready,
+        deepgramReady=bool(settings.deepgram_api_key.strip()),
         voiceLiveEnabled=settings.voice_live_enabled,
         livekitReady=livekit_ready(),
+        knowledgeMode="shared_gateway" if settings.voice_use_shared_gateway else "direct_provider",
     )
 
 

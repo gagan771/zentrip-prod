@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Protocol
 
+from app.config import settings
+
 
 @dataclass(frozen=True)
 class SearchInput:
@@ -312,6 +314,8 @@ _STAY_COMPONENT_LABELS = {
 
 
 def search_stay_adapters(search_input: StaySearchInput) -> list[StaySearchResult]:
+    if not settings.allow_demo_provider_data:
+        return []
     return [result for adapter in STAY_ADAPTERS for result in adapter.search(search_input)]
 
 
@@ -393,6 +397,8 @@ _WEIGHTS = {
 
 
 def search_adapters(search_input: SearchInput) -> list[ProviderSearchResult]:
+    if not settings.allow_demo_provider_data:
+        return []
     return [result for adapter in ADAPTERS for result in adapter.search(search_input)]
 
 

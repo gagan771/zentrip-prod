@@ -16,6 +16,7 @@ from app.db import get_db
 from app.deps import get_current_user
 from app.adaptive_planner import merge_profile, rank_candidates, select_diverse_recommendations
 from app.models import KnowledgeClaim, KnowledgeEntity, KnowledgeSource, User
+from app.knowledge_learning import record_knowledge_interaction
 from app.schemas import (
     DestinationRecommendationOut,
     DestinationRecommendationsResponse,
@@ -81,6 +82,9 @@ async def recommend_destinations(
     results = []
     for item in selected:
         breakdown = item.get("scoreBreakdown", {})
+        experience_profile = item.get("experienceProfile") or {}
+        destination_profile = experience_profile.get("destinationProfile") or {}
+        operational = experience_profile.get("operational") or {}
         tradeoffs = []
         if breakdown.get("seasonFit", 1) < 0.9:
             tradeoffs.append("Seasonal conditions may be less comfortable; verify current weather and closures.")
@@ -88,6 +92,13 @@ async def recommend_destinations(
             tradeoffs.append("Accessibility varies; confirm step-free access and facilities with the operator.")
         if breakdown.get("tripLengthFit", 1) < 0.8:
             tradeoffs.append("This destination may need more or fewer days than your current trip length.")
+        if breakdown.get("freshnessFit", 1) < 0.8:
+            tradeoffs.append("Some hours, ticket, or rating observations are due for refresh; verify before booking.")
+        operational_warnings = [
+            f"{kind} data needs refresh"
+            for kind, value in operational.items()
+            if isinstance(value, dict) and value.get("stale") is True
+        ]
         results.append(
             DestinationRecommendationOut(
                 placeId=item["placeId"],
@@ -105,9 +116,34 @@ async def recommend_destinations(
                     confidence=item.get("confidence", "estimated"),
                 ),
                 tradeoffs=tradeoffs,
+                accessNotes=destination_profile.get("accessNotes"),
+                safetyNotes=destination_profile.get("safetyNotes"),
+                operationalWarnings=operational_warnings,
             )
         )
-    return DestinationRecommendationsResponse(results=results, profile=profile, month=month)
+    interaction_id = None
+    try:
+        query_parts = []
+        if q:
+            query_parts.append(q)
+        if requested_interests:
+            query_parts.append("interests: " + ", ".join(requested_interests))
+        if days:
+            query_parts.append(f"{days} day trip")
+        interaction = await record_knowledge_interaction(
+            db,
+            user,
+            query="; ".join(query_parts) or "destination recommendations",
+            intent="recommendation",
+            result_count=len(results),
+            citation_count=sum(1 for item in results if item.source.sourceUrl or item.source.sourceName),
+            confidence="verified" if results and all(item.source.confidence == "verified" for item in results) else "estimated",
+        )
+        await db.commit()
+        interaction_id = interaction.id
+    except Exception:  # noqa: BLE001 — recommendation quality must not depend on telemetry
+        await db.rollback()
+    return DestinationRecommendationsResponse(results=results, profile=profile, month=month, interactionId=interaction_id)
 
 _MAX_UPLOAD_BYTES = 8_000_000
 _CONTENT_TYPE_MEDIA = {

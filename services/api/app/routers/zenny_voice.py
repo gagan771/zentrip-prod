@@ -52,7 +52,7 @@ async def voice_turn(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     session_id = session_id or str(uuid.uuid4())
-    if voice_agent_ready():
+    if voice_agent_ready() and not settings.voice_use_shared_gateway:
         try:
             history = await load_session_messages(user.id, session_id)
             reply = await ask_text(
@@ -112,5 +112,5 @@ async def voice_turn(
         confidence=result.confidence,
         citations=[KnowledgeCitationOut(**citation) for citation in result.citations],
         items=result.items,
-        brain="zentrip",
+        brain="zentrip-shared-knowledge-gateway",
     )

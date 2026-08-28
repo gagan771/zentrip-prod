@@ -166,7 +166,10 @@ async def _recommendation_reply(db: AsyncSession, text: str, context: dict | Non
         tags = ", ".join(item.get("experienceTags", [])[:3]) or "India travel"
         breakdown = item.get("scoreBreakdown", {})
         season_note = "good seasonal fit" if breakdown.get("seasonFit", 0) >= 0.9 else "check seasonal conditions"
-        lines.append(f"{item['name']} ({item['city']}) — {tags}; {season_note}. {item['fact']}")
+        destination_profile = ((item.get("experienceProfile") or {}).get("destinationProfile") or {})
+        planning_note = destination_profile.get("accessNotes") or destination_profile.get("safetyNotes")
+        note = f" Planning note: {planning_note}" if planning_note else ""
+        lines.append(f"{item['name']} ({item['city']}) — {tags}; {season_note}. {item['fact']}{note}")
         citations.append(
             {
                 "sourceName": item.get("source", "Zentrip reviewed source"),
@@ -550,7 +553,9 @@ async def handle_message(
 ) -> AgentReply:
     intent = classify_intent(text)
     policy_tier = tag_policy(intent)
-    context = await build_context(user, db, trip_id=trip_id) if db is not None and (not voice or intent == "recommendation") else {"preferences": []}
+    # Voice turns need the same profile, trip memory, and durable preferences as
+    # text turns; otherwise a live microphone query would silently lose context.
+    context = await build_context(user, db, trip_id=trip_id) if db is not None else {"preferences": []}
 
     if voice:
         asyncio.create_task(append_session_message(user.id, "user", text, session_id))

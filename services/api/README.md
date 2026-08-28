@@ -1,6 +1,8 @@
 # Zentrip API (`services/api`)
 
-FastAPI backend for the Zentrip mobile app. Phase 1 scope per `00-engineering-phase-roadmap.md`: auth (email/password + Google), the Agent Gateway skeleton, and AI Trip Planner (itinerary generation grounded in a minimal text-only Knowledge Base).
+FastAPI backend for the Zentrip mobile app. It includes auth, the Agent Gateway,
+an adaptive itinerary planner, citation-first Guide retrieval, and a structured
+Indian destination recommendation layer.
 
 ## Run it locally
 
@@ -13,7 +15,7 @@ cp .env.example .env          # fill in GOOGLE_CLIENT_IDS / OPENROUTER_API_KEY t
 docker compose up -d          # Postgres + Redis
 
 alembic upgrade head          # create all tables
-python -m app.seed            # seed a few Delhi/Agra/Jaipur knowledge entities (corridor MVP cities)
+python -m app.seed            # seed cited corridor + pan-India destination knowledge
 
 uvicorn app.main:app --reload --port 8000
 ```
@@ -35,15 +37,21 @@ Health check: `GET http://localhost:8000/health` → `{"status": "ok", ...}` (no
 | `app/llm.py` | OpenRouter-free-model/Claude tool-use adapter with Knowledge Base grounding validation |
 | `app/routers/trips.py` | `/v1/trips`, `/v1/trips/:id`, `/v1/trips/:id/itinerary`, `/v1/trips/:id/generate-itinerary` |
 | `app/routers/planner.py` | Adaptive traveler profiles, versioned itinerary drafts, approvals, feedback, and staff editorial rules |
-| `app/adaptive_planner.py` | Transparent experience scoring, deterministic validation, and grounded fallback planning |
+| `app/adaptive_planner.py` | Transparent experience scoring, seasonal/accessibility/freshness fit, diversity, deterministic validation, and grounded fallback planning |
 | `app/twilio_voice.py` | Twilio outbound call adapter and consent/disclosure TwiML flow |
 | `app/routers/onboarding.py` | Call initiation, TwiML speech prompts, and provider status webhooks |
 | `app/comparison_service.py` | Provider-adapter contract, corridor demo adapters, and deterministic scoring |
 | `app/routers/compare.py` | `/v1/compare/search` and recommendation outcome endpoints |
 | `app/knowledge_service.py` | Citation-first published-claim retrieval for Guide/Zenny |
+| `app/knowledge_refresh.py` | Safe refresh-queue primitives for expiring observations and destination profiles |
+| `app/privacy.py` | Retention boundary and purge helper for raw answer-quality telemetry |
 | `app/knowledge_learning.py` | Records answer quality, aggregates recurring gaps, and builds the improvement report |
 | `app/routers/knowledge.py` | `GET /v1/knowledge/search` returns sourced published claims |
-| `app/seed.py` | Idempotently seeds cited Delhi/Agra/Jaipur starter knowledge — run with `python -m app.seed` |
+| `app/seed.py` | Idempotently seeds cited corridor and pan-India destination knowledge — run with `python -m app.seed` |
+| `scripts/evaluate_recommendations.py` | Offline recommendation quality gate over the curated India catalog |
+| `scripts/knowledge_refresh_worker.py` | Reports due records for scheduled editorial/provider refresh |
+| `scripts/knowledge_privacy_worker.py` | Deletes raw interactions older than `KNOWLEDGE_TELEMETRY_RETENTION_DAYS` |
+| `evals/recommendation_cases.jsonl` | Versioned representative queries and recommendation acceptance criteria |
 | `alembic/` | Migrations (async env, autogenerate-ready) |
 | `docker-compose.yml` | Local Postgres 16 + Redis 7 |
 
@@ -98,11 +106,60 @@ remains inference-only, so this dataset is not silently uploaded to a provider.
 
 **Won't generate anything until you set a key**: create an OpenRouter key and set `OPENROUTER_API_KEY`. Until then this returns `503` with a clear message, same pattern as Google sign-in. Run `python -m app.seed` first so there's grounding data to retrieve — without it, the model is told to produce fewer activities rather than invent any. Direct Claude remains available with `LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`.
 
-## Knowledge Base: claims and citations
+## Knowledge Base: claims, citations, and recommendations
 
 The original `KnowledgeEntity` fact remains as a concise legacy summary. Guide/Zenny retrieval **and itinerary candidates** now use `KnowledgeClaim` rows: each is one publishable fact linked to a `KnowledgeSource`, a source URL, verification state, language, and last-verified date. `GET /v1/knowledge/search?q=Amber%20Fort&city=Jaipur` returns only `published` claims from `active` sources and includes the citation the mobile UI should render.
 
-The seed is editorial content, not a crawler. It currently has a deliberately narrow UNESCO-backed corridor corpus and alternate names such as `Amer Fort`/`Amber Fort`. Facts with no usable source URL are retained as `needs_review` during the migration and cannot be returned by the endpoint. The next data increment is adding reviewed claims—not letting an LLM scrape or invent them. Semantic pgvector retrieval is intentionally deferred until the corpus is larger; exact-name and claim search is easier to audit at this stage.
+The seed is editorial content, not a crawler. It contains UNESCO-backed corridor
+knowledge plus structured pan-India destination anchors, regional profiles, route
+edges, aliases, seasonal guidance, accessibility notes, and expiring operational
+observations. `GET /v1/guide/recommendations` returns diverse, explainable
+matches with score breakdowns, tradeoffs, access/safety notes, and freshness
+warnings. The ranker never promotes an LLM answer into the source of truth.
+Knowledge retrieval now combines claim/entity/alias text with structured
+experience-profile matching and uses Redis as a fail-open five-minute cache.
+Semantic/vector retrieval remains a replaceable next stage; exact-name and
+structured matching is easier to audit at this stage. See
+`docs/india-recommendation-data-roadmap.md` for the next research batches.
+
+Run the offline quality gate after changing ranking weights or catalog metadata:
+
+```bash
+python -m scripts.evaluate_recommendations
+# Optional CI thresholds: coverage, avoidance, relevance, and seasonal fit
+python -m scripts.evaluate_recommendations --min-coverage 0.95 --min-avoidance 0.90 --min-tag-precision 0.50 --min-season-fit 0.85 --min-accessibility-fit 0.75 --min-profile-completeness 0.95
+```
+
+Run the safe refresh scan from a scheduler. It reports due records and does not
+auto-publish scraped or model-generated content:
+
+```bash
+python -m scripts.knowledge_refresh_worker --once
+python -m scripts.knowledge_refresh_worker --watch --interval-seconds 900
+```
+
+Run the privacy purge daily from the deployment scheduler. It deletes raw
+interaction rows only; the aggregated gap queue remains available for editorial
+improvement:
+
+```bash
+python -m scripts.knowledge_privacy_worker --once
+```
+
+Set `RATE_LIMIT_STORAGE_URI=redis://...` in staging/production so rate limits
+are shared across API replicas. The blank default is intentionally suitable only
+for a single local process.
+
+`ALLOW_DEMO_PROVIDER_DATA=true` is for local comparison-screen testing only.
+Set it to `false` in staging/production until an authorized provider adapter is
+connected; the API then fails closed instead of returning fixture fares or stays.
+
+Voice architecture: the mobile live call can request `sttProvider=deepgram`.
+Audio is streamed to Deepgram for transcription, final text is handled by the
+same Zenny gateway used by chat and recommendations, and the response includes
+intent, confidence, citations, interaction ID, and extracted service items.
+`VOICE_USE_SHARED_GATEWAY=true` keeps tap-to-talk on this shared grounded path;
+the direct Sarvam text-agent path is opt-in legacy behavior.
 
 ### Continuous quality loop
 
@@ -138,3 +195,18 @@ Every editorial transition is recorded in `knowledge_moderation_audits`.
 - Configure and test the LLM/STT/vision providers in each deployment environment.
 - Add the remaining external grocery WebView providers after their flows are migrated and device-tested.
 - Swap the CORS wildcard and `JWT_SECRET` dev default before this touches anything but localhost.
+
+### Production launch gate
+
+Before calling the recommendation experience production-ready, verify all of
+these deployment controls:
+
+- `APP_ENV=production`, a strong `JWT_SECRET`, and explicit `CORS_ORIGINS`.
+- `RATE_LIMIT_STORAGE_URI` points to shared Redis when more than one API replica runs.
+- `python -m scripts.knowledge_refresh_worker --once` is scheduled and its due queue has an owner.
+- `python -m scripts.knowledge_privacy_worker --once` runs at least daily.
+- Live weather, closures, permits, ticketing, and transport checks are connected
+  before showing those fields as current; stale observations remain warnings.
+- The offline evaluation gate passes on every ranking/catalog change and new
+  editorial batches include aliases, accessibility, safety, seasonality, and
+  primary citations.

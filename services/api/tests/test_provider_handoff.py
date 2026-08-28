@@ -1,11 +1,21 @@
 import unittest
 from datetime import date
+from unittest.mock import patch
 
+from app.comparison_service import SearchInput, StaySearchInput, search_adapters, search_stay_adapters
+from app.config import settings
 from app.provider_handoff import resolve_city, stay_handoffs, transport_handoffs
-from app.translation_service import translate_with_fallback
+from app.translation_service import LiveTranslationNotConfiguredError, translate_with_fallback
 
 
 class ProviderHandoffTests(unittest.TestCase):
+    def test_demo_provider_fixtures_can_be_disabled(self) -> None:
+        search = SearchInput("Delhi", "Agra", date(2026, 10, 10), "mixed")
+        stay = StaySearchInput("Jaipur", date(2026, 10, 10), date(2026, 10, 12), "mixed")
+        with patch.object(settings, "allow_demo_provider_data", False):
+            self.assertEqual(search_adapters(search), [])
+            self.assertEqual(search_stay_adapters(stay), [])
+
     def test_delhi_agra_includes_irctc_redbus_abhibus_and_flight_otas(self) -> None:
         items = transport_handoffs("Delhi", "Agra", date(2026, 10, 10))
         keys = {item.key for item in items}
@@ -42,7 +52,8 @@ class TranslationFallbackTests(unittest.TestCase):
         self.assertTrue(text)
         self.assertTrue(pronunciation)
 
-    def test_unknown_phrase_without_llm_does_not_invent(self) -> None:
+    @patch("app.translation_service.live_translate_text", side_effect=LiveTranslationNotConfiguredError)
+    def test_unknown_phrase_without_llm_does_not_invent(self, _live_translate_text) -> None:
         text, _pronunciation, confidence, mode = translate_with_fallback(
             "Tell the driver to wait at the gate", "hindi"
         )

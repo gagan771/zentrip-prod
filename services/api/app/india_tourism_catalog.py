@@ -107,6 +107,7 @@ GATEWAY_ENTRIES = [
     ("Kolkata Gateway", "Kolkata", ["Calcutta", "Kolkata airport"], "incredible_india", "city_guide", "East-India gateway for Bengal heritage, Sundarbans, Santiniketan, Odisha, and the North East."),
     ("Guwahati Gateway", "Guwahati", ["Gauhati", "Assam gateway"], "incredible_india", "city_guide", "North-East gateway for Assam, Meghalaya, Arunachal, Nagaland, and Sikkim road circuits."),
     ("Bhopal Gateway", "Bhopal", ["Bhopal airport", "Madhya Pradesh gateway"], "incredible_india", "city_guide", "Central-India gateway for Bhimbetka, Sanchi, Khajuraho, and wildlife routes."),
+    ("Dehradun Gateway", "Dehradun", ["Dehradun airport", "Uttarakhand gateway"], "incredible_india", "city_guide", "Foothill gateway for Mussoorie, Auli, Rishikesh, and Garhwal mountain routes."),
     ("Bhubaneswar Gateway", "Bhubaneswar", ["Bhubaneswar airport", "Odisha gateway"], "incredible_india", "city_guide", "Odisha gateway for Bhubaneswar temples, Puri, Konark, Chilika, and eastern heritage routes."),
     ("Bhuj Gateway", "Bhuj", ["Kutch gateway", "Bhuj airport"], "incredible_india", "city_guide", "Kutch gateway for the Rann, craft villages, Dholavira, and western desert landscapes."),
 ]

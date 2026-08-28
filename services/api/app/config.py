@@ -20,11 +20,41 @@ class Settings(BaseSettings):
     cors_origins: str = "*"
     rate_limit_default: str = "120/minute"
     rate_limit_auth: str = "20/minute"
+    # Set to a shared Redis URI in staging/production; blank keeps local dev self-contained.
+    rate_limit_storage_uri: str = ""
+    knowledge_telemetry_retention_days: int = 90
+    # Demo comparison fixtures are useful for local UX testing but must never be
+    # enabled in a production booking decision.
+    allow_demo_provider_data: bool = True
+    # The shared gateway is the source of truth for tap-to-talk voice answers.
+    # The direct Sarvam text agent remains available only as an explicit legacy mode.
+    voice_use_shared_gateway: bool = True
 
     @property
     def cors_origin_list(self) -> list[str]:
         raw = [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
         return raw or ["*"]
+
+    def production_configuration_errors(self) -> list[str]:
+        """Return deployment blockers that would make a production boot unsafe."""
+        if self.app_env != "production":
+            return []
+        errors: list[str] = []
+        if self.jwt_secret in ("", "dev-secret-change-me") or len(self.jwt_secret) < 32:
+            errors.append("JWT_SECRET must be a random value of at least 32 characters")
+        if self.cors_origin_list == ["*"]:
+            errors.append("CORS_ORIGINS must explicitly list trusted production origins")
+        if not self.rate_limit_storage_uri.strip():
+            errors.append("RATE_LIMIT_STORAGE_URI must point to shared Redis in production")
+        if self.allow_demo_provider_data:
+            errors.append("ALLOW_DEMO_PROVIDER_DATA must be false in production")
+        if self.llm_provider == "openrouter" and not self.openrouter_api_key.strip():
+            errors.append("OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter")
+        if self.llm_provider == "anthropic" and not self.anthropic_api_key.strip():
+            errors.append("ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic")
+        if self.llm_provider not in {"openrouter", "anthropic"}:
+            errors.append("LLM_PROVIDER must be openrouter or anthropic")
+        return errors
 
     # Set this to the real OAuth client ID(s) from Google Cloud Console before
     # "Continue with Google" actually works end to end. Accepts a comma-separated

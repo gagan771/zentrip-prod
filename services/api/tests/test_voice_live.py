@@ -1,7 +1,8 @@
 import asyncio
 import unittest
+from unittest.mock import AsyncMock, patch
 
-from app.stt_live import parse_deepgram_event, parse_sarvam_event
+from app.stt_live import parse_deepgram_event, parse_sarvam_event, run_streaming_stt
 from app.voice_pcm import looks_like_wav, wav_to_pcm16
 from app.voice_service import _silent_wav
 
@@ -15,6 +16,38 @@ class SttEventParseTests(unittest.TestCase):
         self.assertEqual(partial.kind, "partial")
         self.assertEqual(final.kind, "final")
         self.assertEqual(final.text, "Tell me about the Taj.")
+
+
+class SttProviderSelectionTests(unittest.TestCase):
+    def test_explicit_deepgram_selection_does_not_fall_back_to_sarvam(self) -> None:
+        deepgram = AsyncMock()
+        sarvam = AsyncMock()
+        with (
+            patch("app.stt_live.settings") as settings,
+            patch("app.stt_live._run_deepgram", deepgram),
+            patch("app.stt_live._run_sarvam", sarvam),
+        ):
+            settings.deepgram_api_key = "deepgram-key"
+            settings.sarvam_key_list = ["sarvam-key"]
+            asyncio.run(run_streaming_stt(asyncio.Queue(), AsyncMock(), "deepgram"))
+
+        deepgram.assert_awaited_once()
+        sarvam.assert_not_awaited()
+
+    def test_auto_selection_keeps_sarvam_first(self) -> None:
+        deepgram = AsyncMock()
+        sarvam = AsyncMock()
+        with (
+            patch("app.stt_live.settings") as settings,
+            patch("app.stt_live._run_deepgram", deepgram),
+            patch("app.stt_live._run_sarvam", sarvam),
+        ):
+            settings.deepgram_api_key = "deepgram-key"
+            settings.sarvam_key_list = ["sarvam-key"]
+            asyncio.run(run_streaming_stt(asyncio.Queue(), AsyncMock()))
+
+        sarvam.assert_awaited_once()
+        deepgram.assert_not_awaited()
 
     def test_sarvam_vad_and_error(self) -> None:
         start = parse_sarvam_event({"event": "vad.speech_start"})

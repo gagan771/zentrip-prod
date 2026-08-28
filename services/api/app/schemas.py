@@ -1,5 +1,6 @@
 import uuid
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -71,6 +72,7 @@ class TravelerProfileInput(BaseModel):
     accessibility: list[str] = Field(default_factory=list, max_length=10)
     foodPreferences: list[str] = Field(default_factory=list, max_length=20)
     avoidInterests: list[str] = Field(default_factory=list, max_length=20)
+    preferredRegions: list[str] = Field(default_factory=list, max_length=10)
 
 
 class TravelerProfileOut(TravelerProfileInput):
@@ -960,6 +962,9 @@ class DestinationRecommendationOut(BaseModel):
     experienceTags: list[str]
     source: KnowledgeCitationOut
     tradeoffs: list[str] = Field(default_factory=list)
+    accessNotes: str | None = None
+    safetyNotes: str | None = None
+    operationalWarnings: list[str] = Field(default_factory=list)
 
 
 class DestinationRecommendationsResponse(BaseModel):
@@ -967,6 +972,7 @@ class DestinationRecommendationsResponse(BaseModel):
     profile: dict
     month: int | None = None
     provenance: str = "reviewed"
+    interactionId: uuid.UUID | None = None
 
 
 class ZennyVoiceTurnResponse(BaseModel):
@@ -985,8 +991,10 @@ class ZennyVoiceTurnResponse(BaseModel):
 class ZennyVoiceStatusResponse(BaseModel):
     agentReady: bool
     liveSttReady: bool
+    deepgramReady: bool = False
     voiceLiveEnabled: bool
     livekitReady: bool = False
+    knowledgeMode: str = "shared_gateway"
 
 
 class ZennyLivekitTokenRequest(BaseModel):
@@ -1017,6 +1025,7 @@ class ZennyAgentSessionResponse(BaseModel):
 class ZennyLiveSessionRequest(BaseModel):
     sessionId: str | None = None
     tripId: uuid.UUID | None = None
+    sttProvider: Literal["auto", "deepgram", "sarvam"] = "auto"
 
 
 class ZennyLiveSessionResponse(BaseModel):

@@ -38,7 +38,13 @@ def _redact(text: str) -> str:
     return _PHONE.sub("[phone]", text)
 
 
-def _stt_provider_name() -> str:
+def _stt_provider_name(preferred: str = "auto") -> str:
+    if preferred == "deepgram" and settings.deepgram_api_key.strip():
+        return "deepgram"
+    if preferred == "sarvam" and settings.sarvam_key_list:
+        return "sarvam"
+    if preferred == "deepgram" or preferred == "sarvam":
+        return "none"
     if settings.sarvam_key_list:
         return "sarvam"
     if settings.deepgram_api_key.strip():
@@ -71,6 +77,12 @@ async def create_live_session(
             detail="Live voice is not configured. Set SARVAM_API_KEYS (or DEEPGRAM_API_KEY) on the API.",
         )
     payload = body
+    stt_provider = _stt_provider_name(payload.sttProvider)
+    if stt_provider == "none":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Requested {payload.sttProvider} streaming STT is not configured on the API.",
+        )
     session_id = payload.sessionId or str(uuid.uuid4())
     ticket = uuid.uuid4().hex
     await redis.set(
@@ -80,6 +92,7 @@ async def create_live_session(
                 "userId": str(user.id),
                 "sessionId": session_id,
                 "tripId": str(payload.tripId) if payload.tripId else None,
+                "sttProvider": stt_provider,
             }
         ),
         ex=_TICKET_TTL,
@@ -88,7 +101,7 @@ async def create_live_session(
         sessionId=session_id,
         wsUrl=_ws_url(ticket),
         ticket=ticket,
-        sttProvider=_stt_provider_name(),
+        sttProvider=stt_provider,
     )
 
 
@@ -102,7 +115,7 @@ async def live_voice(websocket: WebSocket, ticket: str = Query(...)) -> None:
     claim = json.loads(raw)
     await websocket.accept()
     await websocket.send_json(
-        {"type": "status", "phase": "listening", "sttProvider": _stt_provider_name()}
+        {"type": "status", "phase": "listening", "sttProvider": claim.get("sttProvider") or _stt_provider_name()}
     )
 
     pcm_in: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=96)
@@ -177,6 +190,7 @@ async def live_voice(websocket: WebSocket, ticket: str = Query(...)) -> None:
                     "confidence": result.confidence,
                     "citations": [KnowledgeCitationOut(**citation).model_dump(mode="json") for citation in result.citations],
                     "items": result.items,
+                    "brain": "zentrip-shared-knowledge-gateway",
                 }
             )
             await emit({"type": "status", "phase": "listening"})
@@ -208,7 +222,7 @@ async def live_voice(websocket: WebSocket, ticket: str = Query(...)) -> None:
         elif event.kind == "error":
             await emit({"type": "error", "message": event.text or "Speech recognition failed"})
 
-    stt_task = asyncio.create_task(run_streaming_stt(pcm_in, on_stt))
+    stt_task = asyncio.create_task(run_streaming_stt(pcm_in, on_stt, claim.get("sttProvider", "auto")))
 
     try:
         while True:

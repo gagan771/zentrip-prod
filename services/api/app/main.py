@@ -34,9 +34,11 @@ from app.routers import (
     zenny_voice,
 )
 
-# Refuse to boot with the well-known local default when APP_ENV=production.
-if settings.app_env == "production" and settings.jwt_secret in ("", "dev-secret-change-me"):
-    raise RuntimeError("JWT_SECRET must be set to a strong random value when APP_ENV=production")
+# Refuse to boot with unsafe local defaults in production. Fail-fast makes a
+# misconfigured deployment visible before it can serve weakly protected traffic.
+_production_configuration_errors = settings.production_configuration_errors()
+if _production_configuration_errors:
+    raise RuntimeError("Production configuration errors: " + "; ".join(_production_configuration_errors))
 
 
 @asynccontextmanager

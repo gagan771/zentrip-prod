@@ -79,7 +79,15 @@ class SarvamRateLimited(Exception):
     pass
 
 
-async def run_streaming_stt(pcm_in: asyncio.Queue[bytes | None], on_event: EventHandler) -> None:
+async def run_streaming_stt(
+    pcm_in: asyncio.Queue[bytes | None], on_event: EventHandler, provider: str = "auto"
+) -> None:
+    if provider == "deepgram" and settings.deepgram_api_key.strip():
+        await _run_deepgram(pcm_in, on_event)
+        return
+    if provider == "sarvam" and settings.sarvam_key_list:
+        await _run_sarvam(pcm_in, on_event)
+        return
     if settings.sarvam_key_list:
         await _run_sarvam(pcm_in, on_event)
         return

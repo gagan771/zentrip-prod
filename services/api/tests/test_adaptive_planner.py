@@ -7,6 +7,7 @@ from app.adaptive_planner import (
     fallback_days,
     merge_profile,
     rank_candidates,
+    score_candidate,
     select_diverse_recommendations,
     validate_generated_days,
 )
@@ -57,6 +58,49 @@ class AdaptivePlannerTests(unittest.TestCase):
         self.assertIn("spiritual", profile["avoidInterests"])
         self.assertIn("beach", profile["avoidInterests"])
 
+    def test_keyword_matching_does_not_turn_seasonal_into_sea_or_beach(self) -> None:
+        candidate = {
+            "name": "Auli Base",
+            "city": "Auli",
+            "fact": "A seasonal Himalayan meadow with mountain routes.",
+            "experienceProfile": {"tags": ["mountains", "nature"]},
+        }
+        ranked = rank_candidates([candidate], {"interests": ["beach"]}, {})
+        self.assertEqual(ranked[0]["scoreBreakdown"]["interestFit"], 0.35)
+
+    def test_region_language_becomes_a_preference(self) -> None:
+        profile = merge_profile({}, ["Suggest nature in Northeast India"])
+        self.assertEqual(profile["preferredRegions"], ["North East"])
+
+    def test_region_is_hard_when_catalog_can_satisfy_it(self) -> None:
+        candidates = [
+            {"name": "North place", "city": "Delhi", "fact": "heritage", "experienceProfile": {"destinationProfile": {"region": "North"}}},
+            {"name": "South place", "city": "Chennai", "fact": "heritage", "experienceProfile": {"destinationProfile": {"region": "South"}}},
+        ]
+        ranked = rank_candidates(candidates, {"preferredRegions": ["North"]}, {})
+        self.assertEqual([item["name"] for item in ranked], ["North place"])
+
+    def test_region_falls_back_when_catalog_has_no_match(self) -> None:
+        candidates = [{"name": "South place", "city": "Chennai", "fact": "heritage", "experienceProfile": {"destinationProfile": {"region": "South"}}}]
+        ranked = rank_candidates(candidates, {"preferredRegions": ["North"]}, {})
+        self.assertEqual([item["name"] for item in ranked], ["South place"])
+
+    def test_explicit_interest_is_hard_when_catalog_can_satisfy_it(self) -> None:
+        candidates = [
+            {"name": "Beach", "city": "Goa", "fact": "coastal beach", "experienceProfile": {"tags": ["beach"]}},
+            {"name": "Fort", "city": "Delhi", "fact": "historic fort", "experienceProfile": {"tags": ["heritage"]}},
+        ]
+        ranked = rank_candidates(candidates, {"interests": ["beach"]}, {})
+        self.assertEqual([item["name"] for item in ranked], ["Beach"])
+
+    def test_wheelchair_request_prefers_known_accessible_catalog_matches(self) -> None:
+        candidates = [
+            {"name": "Step-free place", "city": "Delhi", "fact": "heritage", "experienceProfile": {"destinationProfile": {"accessibility": {"wheelchair": "high"}}}},
+            {"name": "Unknown access place", "city": "Agra", "fact": "heritage", "experienceProfile": {}},
+        ]
+        ranked = rank_candidates(candidates, {"accessibility": ["wheelchair"]}, {})
+        self.assertEqual([item["name"] for item in ranked], ["Step-free place"])
+
     def test_matching_experience_ranks_first(self) -> None:
         ranked = rank_candidates(self.candidates, {"interests": ["food"], "pace": "relaxed", "walkingTolerance": "medium"}, {"budgetLevel": "mixed"})
         self.assertEqual(ranked[0]["name"], "Jaipur Food Market")
@@ -85,6 +129,26 @@ class AdaptivePlannerTests(unittest.TestCase):
         self.assertFalse(validation["passed"])
         self.assertTrue(any("unknown place" in error for error in validation["errors"]))
         self.assertTrue(days)
+
+    def test_validation_replaces_ungrounded_activity_reason(self) -> None:
+        days, validation = validate_generated_days(
+            [
+                {"day": 1, "city": "Jaipur", "activities": [
+                    {
+                        "startTime": "09:00", "placeId": self.candidates[0]["placeId"],
+                        "durationMinutes": 120,
+                        "reason": "This place guarantees a Michelin-starred restaurant and free entry.",
+                    },
+                ]},
+                {"day": 2, "city": "Agra", "activities": []},
+            ],
+            self.trip,
+            self.candidates,
+            {"maxActivitiesPerDay": 3},
+        )
+        self.assertTrue(validation["passed"])
+        self.assertEqual(days[0]["activities"][0]["reason"], "Selected from reviewed knowledge for your trip preferences.")
+        self.assertTrue(any("not grounded" in warning for warning in validation["warnings"]))
 
     def test_fallback_is_grounded_and_covers_trip_days(self) -> None:
         days = fallback_days(self.trip, rank_candidates(self.candidates, {}, {"budgetLevel": "mixed"}), {}, {"maxActivitiesPerDay": 2})
@@ -145,11 +209,8 @@ class AdaptivePlannerTests(unittest.TestCase):
                 },
             },
         ]
-        ranked = rank_candidates(
-            candidates,
-            {"interests": ["beach"], "travelParty": "family", "accessibility": ["wheelchair"]},
-            {"budgetLevel": "mixed", "travelMonth": 7, "tripDays": 4},
-        )
+        ranked = [score_candidate(candidate, {"interests": ["beach"], "travelParty": "family", "accessibility": ["wheelchair"]}, {"budgetLevel": "mixed", "travelMonth": 7, "tripDays": 4}) for candidate in candidates]
+        ranked = sorted(ranked, key=lambda item: -item["plannerScore"])
         coast = next(item for item in ranked if item["placeId"] == "summer")
         self.assertEqual(coast["scoreBreakdown"]["seasonFit"], 0.45)
         self.assertEqual(coast["scoreBreakdown"]["accessibilityFit"], 0.65)
@@ -163,6 +224,23 @@ class AdaptivePlannerTests(unittest.TestCase):
         ]
         selected = select_diverse_recommendations(ranked, 2)
         self.assertEqual([item["name"] for item in selected], ["A", "C"])
+
+    def test_stale_operational_data_is_a_small_visible_penalty(self) -> None:
+        candidate = {
+            "placeId": "a",
+            "name": "A",
+            "city": "Delhi",
+            "fact": "heritage",
+            "experienceProfile": {
+                "operational": {
+                    "hours": {"stale": True},
+                    "ticketing": {"stale": True},
+                }
+            },
+        }
+        result = rank_candidates([candidate], {"interests": ["heritage"]}, {})[0]
+        self.assertEqual(result["scoreBreakdown"]["freshnessFit"], 0.6)
+        self.assertIn("freshnessFit", result["scoreBreakdown"])
 
 
 if __name__ == "__main__":
