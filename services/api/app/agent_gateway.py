@@ -4,47 +4,33 @@ The Agent Gateway, per 01-zentrip-companion.md §6:
     User -> Agent Gateway -> Context Builder -> Intent Router -> Policy Engine
          -> Orchestrator (tools / RAG / live providers) -> Response Engine
 
-Phase 1 scope (00-engineering-phase-roadmap.md): the loop and its tool-use *skeleton*
-are wired end to end, with session memory in Redis (the first of the three memory
-tiers from 01-zentrip-companion.md §3). No real tools (search_transport, open_service,
-etc.) are bound yet — those arrive with the features that implement them. The intent
-classifier below is deliberately simple keyword matching: the spec's own ranking
-philosophy (§47) is "start with rules, then learn," and an agent gateway is no different.
+The loop and its tool-use skeleton are wired end to end, with session memory in Redis
+(the first of the three memory tiers from 01-zentrip-companion.md §3). Corridor tools
+are deterministic and source-aware; live providers remain explicit integration seams.
+The intent classifier below is deliberately simple keyword matching: the spec's own
+ranking philosophy (§47) is "start with rules, then learn," and an agent gateway is no different.
 """
 
 import json
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_intent import classify_intent, is_backchannel
 from app.comparison_service import find_known_locations
 from app.knowledge_service import search_published_claims
 from app.llm import LLMNotConfiguredError, LLMProviderError
-from app.models import Trip, TripMemoryNote, User, UserPreference
+from app.phrasebook import _translation_reply
+from app.models import RiskPattern, Trip, TripMemoryNote, User, UserPreference
 from app.redis_client import redis
+from app.social_service import find_buddy_matches, find_tonight_events, parse_buddy_request
+from app.spoken import spoken_preview
 
 SESSION_TTL = timedelta(hours=2)
-
-INTENT_KEYWORDS: dict[str, list[str]] = {
-    "trip_planning": ["plan", "itinerary", "trip", "days in", "visit"],
-    "compare": [
-        "cheapest", "fastest", "compare", "train", "flight", "bus", "cab",
-        # Stay search shares the "compare" intent (see _compare_reply) — same
-        # category per 03-compare-decision-engine.md, not a separate tool.
-        "hostel", "hotel", "where to stay", "place to stay", "accommodation",
-    ],
-    "translation": ["translate", "say in", "menu", "what does this mean"],
-    "guide": ["what is this", "what am i looking at", "history of", "tell me about"],
-    "payment": ["pay", "upi", "atm", "cash", "credit card", "debit card", "rupees", "wallet"],
-    "services": ["need", "buy", "grocery", "toothpaste", "charger", "deliver"],
-    "safety": ["scam", "help", "emergency", "lost my", "unsafe"],
-    "community": ["events tonight", "what's happening", "meetup"],
-    "buddy": ["travel buddy", "group to", "find people"],
-}
 
 # Policy tiers per 01-zentrip-companion.md §6 / master spec §43.
 NO_CONFIRMATION_INTENTS = {"guide", "payment", "translation", "compare", "community", "chat"}
@@ -65,14 +51,6 @@ class AgentReply:
     items: list[str] = field(default_factory=list)
 
 
-def classify_intent(text: str) -> str:
-    lowered = text.lower()
-    for intent, keywords in INTENT_KEYWORDS.items():
-        if any(keyword in lowered for keyword in keywords):
-            return intent
-    return "chat"
-
-
 def tag_policy(intent: str) -> str:
     if intent in STRONG_VERIFICATION_INTENTS:
         return "strong_verification"
@@ -81,7 +59,7 @@ def tag_policy(intent: str) -> str:
     return "no_confirmation"
 
 
-async def build_context(user: User, db: AsyncSession | None = None) -> dict:
+async def build_context(user: User, db: AsyncSession | None = None, trip_id: uuid.UUID | None = None) -> dict:
     """
     Context Builder, per 01-zentrip-companion.md §2/§3 — only loads what's permissioned,
     across the three memory tiers: profile fields always; trip memory (most recent notes
@@ -106,9 +84,12 @@ async def build_context(user: User, db: AsyncSession | None = None) -> dict:
     if db is None:
         return context
 
-    trip = (
-        await db.execute(select(Trip).where(Trip.user_id == user.id).order_by(Trip.created_at.desc()).limit(1))
-    ).scalar_one_or_none()
+    trip_query = select(Trip).where(Trip.user_id == user.id)
+    if trip_id is not None:
+        trip_query = trip_query.where(Trip.id == trip_id)
+    else:
+        trip_query = trip_query.order_by(Trip.created_at.desc()).limit(1)
+    trip = (await db.execute(trip_query)).scalar_one_or_none()
     if trip is not None:
         notes = (
             await db.execute(
@@ -133,26 +114,31 @@ async def build_context(user: User, db: AsyncSession | None = None) -> dict:
 
 def _no_tool_reply(intent: str) -> str:
     if intent == "chat":
-        return "I hear you. I don't have a specific tool wired for that yet, but I'm listening."
+        return (
+            "I can help with monuments and history, trains and cabs, UPI and cash, "
+            "safety, translation, groceries, or finding travel buddies. What do you need?"
+        )
     return (
-        f"I understood this as a '{intent}' request. The real tool for that isn't connected yet — "
-        f"it lands in a later engineering phase (see 00-engineering-phase-roadmap.md). "
-        f"For now this just confirms the routing works."
+        f"I understood this as a {intent.replace('_', ' ')} request. "
+        "Try a short question — for example a place name, a route, or what you need to buy."
     )
 
 
-async def _session_key(user_id: uuid.UUID) -> str:
+async def _session_key(user_id: uuid.UUID, session_id: str | None = None) -> str:
+    if session_id:
+        safe_suffix = re.sub(r"[^a-zA-Z0-9_.:-]", "-", session_id)[:96]
+        return f"zentrip:session:{user_id}:{safe_suffix}"
     return f"zentrip:session:{user_id}"
 
 
-async def load_session_messages(user_id: uuid.UUID) -> list[dict]:
-    raw = await redis.get(await _session_key(user_id))
+async def load_session_messages(user_id: uuid.UUID, session_id: str | None = None) -> list[dict]:
+    raw = await redis.get(await _session_key(user_id, session_id))
     return json.loads(raw) if raw else []
 
 
-async def append_session_message(user_id: uuid.UUID, role: str, text: str) -> None:
-    key = await _session_key(user_id)
-    messages = await load_session_messages(user_id)
+async def append_session_message(user_id: uuid.UUID, role: str, text: str, session_id: str | None = None) -> None:
+    key = await _session_key(user_id, session_id)
+    messages = await load_session_messages(user_id, session_id)
     messages.append({"role": role, "text": text})
     await redis.set(key, json.dumps(messages[-20:]), ex=int(SESSION_TTL.total_seconds()))
 
@@ -221,23 +207,34 @@ async def _compare_reply(db: AsyncSession, user: User, text: str) -> tuple[str, 
         budget_level="backpacker",
     )
     if not response.results:
-        return (response.message, "estimated", [])
+        names = ", ".join(item.displayName for item in response.handoffs[:6]) or "IRCTC, RedBus, Goibibo, MakeMyTrip"
+        return (
+            f"{response.message} I can open live booking on {names}.",
+            "estimated",
+            [],
+        )
 
     top = response.results[0]
+    live = ", ".join(item.displayName for item in response.handoffs[:5])
     reply = (
-        f"For {origin} to {destination} tomorrow, the top demo option is {top.provider} ({top.mode}): "
-        f"₹{top.totalPrice} total, about {top.durationMinutes} minutes. {response.message}"
+        f"For {origin} to {destination}, a typical {top.mode} estimate is about {top.durationMinutes} minutes. "
+        f"Live fares are on {live}. Open Compare or Book live to check out on those sites."
     )
     return reply, "estimated", []
 
 
-async def _trip_reply(db: AsyncSession, user: User) -> tuple[str, str, list[dict]]:
+async def _trip_reply(
+    db: AsyncSession, user: User, trip_id: uuid.UUID | None = None
+) -> tuple[str, str, list[dict]]:
     # Local import for the same reason as _compare_reply above.
     from app.routers.trips import regenerate_itinerary
 
-    trip = (
-        await db.execute(select(Trip).where(Trip.user_id == user.id).order_by(Trip.created_at.desc()).limit(1))
-    ).scalar_one_or_none()
+    trip_query = select(Trip).where(Trip.user_id == user.id)
+    if trip_id is not None:
+        trip_query = trip_query.where(Trip.id == trip_id)
+    else:
+        trip_query = trip_query.order_by(Trip.created_at.desc()).limit(1)
+    trip = (await db.execute(trip_query)).scalar_one_or_none()
     if trip is None:
         return (
             "I don't have a trip started for you yet. Create one with your destination cities and "
@@ -338,11 +335,48 @@ def _services_reply(text: str) -> tuple[str, str, list[dict], list[str]]:
     return reply, "estimated", [], items
 
 
-async def _guide_reply(db: AsyncSession, text: str) -> tuple[str, str, list[dict]]:
-    rows = await search_published_claims(db, query=text, limit=2)
+_EMERGENCY_KEYWORDS = ("emergency", "help me", "i'm in danger", "im in danger", "unsafe", "attack", "ambulance", "police now")
+
+
+def _is_emergency(text: str) -> bool:
+    lowered = text.lower()
+    return any(keyword in lowered for keyword in _EMERGENCY_KEYWORDS)
+
+
+def _emergency_reply() -> tuple[str, str, list[dict]]:
+    """Deterministic, no-retrieval emergency answer — 15-zentrip-guardian-safety.md's
+    "if in danger, one tap / one sentence gets the number" requirement. Never depends on
+    the KB being seeded or search matching; always speaks the number first."""
+    return (
+        "If you're in immediate danger, call 112 now — India's single emergency number for "
+        "police, fire, and ambulance. For tourist help, call 1363.",
+        "verified",
+        [
+            {
+                "sourceName": "Emergency Response Support System (ERSS), Ministry of Home Affairs",
+                "sourceUrl": "https://112.gov.in/",
+                "sourceLocator": None,
+                "lastVerified": None,
+                "confidence": "verified",
+            },
+            {
+                "sourceName": "Ministry of Tourism, Government of India — Tourist Infoline",
+                "sourceUrl": "https://tourism.gov.in/",
+                "sourceLocator": None,
+                "lastVerified": None,
+                "confidence": "verified",
+            },
+        ],
+    )
+
+
+async def _guide_reply(db: AsyncSession, text: str, *, limit: int = 8) -> tuple[str, str, list[dict]]:
+    rows = await search_published_claims(db, query=text, limit=limit)
     if not rows:
         return (
-            "I don't have a reviewed source for that yet. Ask me about a landmark in Delhi, Agra, or Jaipur, or try another name.",
+            "I don't have a reviewed source for that yet. Ask about a major Indian monument, city, "
+            "route, season, sunset point, or food street — for example the Taj Mahal, Diwan-i-Khas, "
+            "Golden Temple, Hampi, when to visit Jaipur, Delhi to Agra distance, or Mehtab Bagh sunset.",
             "estimated",
             [],
         )
@@ -363,34 +397,158 @@ async def _guide_reply(db: AsyncSession, text: str) -> tuple[str, str, list[dict
     return " ".join(spoken_facts), "verified", citations
 
 
-async def handle_message(user: User, text: str, db: AsyncSession | None = None) -> AgentReply:
+async def _risk_reply(db: AsyncSession, text: str) -> tuple[str, str, list[dict]] | None:
+    """Return only published, pattern-based risk entries for a named corridor city."""
+    lowered = text.casefold()
+    city = next((candidate for candidate in ("Delhi", "Agra", "Jaipur") if candidate.casefold() in lowered), None)
+    if not city:
+        return None
+    rows = list((await db.scalars(
+        select(RiskPattern)
+        .where(RiskPattern.status == "published", RiskPattern.city.ilike(city))
+        .order_by(RiskPattern.last_verified.desc())
+        .limit(3)
+    )).all())
+    if not rows:
+        return None
+    lines = [f"{row.location_label}: {row.pattern} Recommended action: {row.recommendation}" for row in rows]
+    citations = [
+        {
+            "sourceName": row.source_name,
+            "sourceUrl": row.source_url,
+            "sourceLocator": row.location_label,
+            "lastVerified": row.last_verified,
+            "confidence": row.confidence,
+        }
+        for row in rows
+    ]
+    return "Risk patterns for " + city + " (confidence and freshness shown in the app): " + " ".join(lines), "estimated", citations
+
+
+def _community_reply(text: str) -> tuple[str, str, list[dict]]:
+    """Per 08-destination-community.md: 'what's happening tonight in <city>?' —
+    demo corridor events with stale entries hidden at query time."""
+    events = find_tonight_events(text)
+    if not events:
+        return (
+            "I don't have any upcoming verified events on the demo list right now. "
+            "Try asking about Delhi, Agra, or Jaipur.",
+            "estimated",
+            [],
+        )
+    lines = []
+    for event in events[:3]:
+        when = datetime.fromisoformat(event["startTime"]).strftime("%A %I:%M %p").lstrip("0")
+        freshness = "verified" if event["verificationStatus"] == "verified" else "community-reported"
+        lines.append(f"{event['title']} in {event['city']} ({when}, {freshness})")
+    return (
+        "Here's what's coming up on the demo community board: " + ". ".join(lines) + ".",
+        "estimated",
+        [],
+    )
+
+
+def _buddy_reply(text: str) -> tuple[str, str, list[dict]]:
+    """Per 10-travel-buddy-group-matchmaking.md's V1 deterministic score, against
+    demo groups. Aggregated cards only — no personal details pre-consent (§23.4)."""
+    request = parse_buddy_request(text)
+    matches = find_buddy_matches(request)
+    if not matches or matches[0]["compatibility"] <= 0:
+        return (
+            "Tell me a destination, rough dates, and budget — like 'trekking in Spiti this "
+            "October, ₹20k, starting from Delhi' — and I'll find matching demo travel groups.",
+            "estimated",
+            [],
+        )
+    top = matches[0]
+    others = len([m for m in matches[1:] if m["compatibility"] > 0])
+    extra = f" {others} more group{'s' if others != 1 else ''} also matched." if others else ""
+    reply = (
+        f"Best demo match: {top['name']} — {top['destination']}, {top['dateRange']}, "
+        f"{top['members']} members, {top['budgetBand']}, {top['style']}, "
+        f"{top['interests']} · Compatibility {top['compatibility']}%.{extra}"
+    )
+    return reply, "estimated", []
+
+
+async def handle_message(
+    user: User,
+    text: str,
+    db: AsyncSession | None = None,
+    session_id: str | None = None,
+    *,
+    voice: bool = False,
+    trip_id: uuid.UUID | None = None,
+) -> AgentReply:
     intent = classify_intent(text)
     policy_tier = tag_policy(intent)
-    context = await build_context(user, db)  # noqa: F841 — real read path now; see build_context's docstring
+    if not voice:
+        await build_context(user, db, trip_id=trip_id)  # noqa: F841 — real read path now; see build_context's docstring
 
-    await append_session_message(user.id, "user", text)
+    await append_session_message(user.id, "user", text, session_id)
     items: list[str] = []
     # "payment" reuses the guide's citation-first KB lookup rather than its own function —
     # per 18-payment-assistance.md, it's "just a content category," not a separate service.
-    if intent in ("guide", "payment") and db is not None:
-        reply_text, confidence, citations = await _guide_reply(db, text)
+    # Same for "safety" (15/16): Guardian/emergency/scam content rides this pipeline too,
+    # with one addition below — an emergency-keyword fast path that answers first with the
+    # 112 number regardless of what else the KB search returns.
+    if intent in ("guide", "payment", "safety") and db is not None:
+        reply_text, confidence, citations = await _guide_reply(db, text, limit=3 if voice else 8)
+        if intent == "safety" and not _is_emergency(text):
+            risk_result = await _risk_reply(db, text)
+            if risk_result:
+                reply_text, confidence, citations = risk_result
+        if intent == "safety" and _is_emergency(text):
+            emergency_reply, emergency_confidence, emergency_citations = _emergency_reply()
+            # Lead with the emergency answer; append anything else KB retrieval found.
+            reply_text = f"{emergency_reply} {reply_text}" if reply_text != (
+                "I don't have a reviewed source for that yet. Ask me about a landmark in Delhi, Agra, or Jaipur, or try another name."
+            ) else emergency_reply
+            confidence = emergency_confidence if emergency_citations else confidence
+            citations = emergency_citations + citations
     elif intent == "compare" and db is not None:
         reply_text, confidence, citations = await _compare_reply(db, user, text)
     elif intent == "trip_planning" and db is not None:
-        reply_text, confidence, citations = await _trip_reply(db, user)
+        if voice:
+            reply_text, confidence, citations = (
+                "Open the Trip tab for a full itinerary. Ask me a short question about a monument, "
+                "route, season, or food street and I'll answer from sourced records.",
+                "estimated",
+                [],
+            )
+        else:
+            reply_text, confidence, citations = await _trip_reply(db, user, trip_id=trip_id)
     elif intent == "services":
         reply_text, confidence, citations, items = _services_reply(text)
+    elif intent == "translation":
+        reply_text, confidence, citations = await _translation_reply(text)
+    elif intent == "community":
+        reply_text, confidence, citations = _community_reply(text)
+    elif intent == "buddy":
+        reply_text, confidence, citations = _buddy_reply(text)
     else:
         reply_text = _no_tool_reply(intent)
         confidence = "estimated"
         citations = []
-    await append_session_message(user.id, "assistant", reply_text)
+    await append_session_message(user.id, "assistant", reply_text, session_id)
 
     return AgentReply(
         intent=intent, policy_tier=policy_tier, reply=reply_text, confidence=confidence, citations=citations, items=items
     )
 
 
-async def handle_voice_turn(user: User, transcript: str, db: AsyncSession) -> AgentReply:
+async def handle_voice_turn(
+    user: User,
+    transcript: str,
+    db: AsyncSession,
+    session_id: str | None = None,
+    trip_id: uuid.UUID | None = None,
+) -> AgentReply | None:
     """Voice-first entrypoint; transcript text never becomes a chat UI contract."""
-    return await handle_message(user, transcript, db)
+    if is_backchannel(transcript):
+        return None
+    result = await handle_message(
+        user, transcript, db, session_id=session_id, voice=True, trip_id=trip_id
+    )
+    result.reply = spoken_preview(result.reply)
+    return result
