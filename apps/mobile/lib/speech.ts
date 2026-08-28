@@ -86,7 +86,9 @@ export const VOICE_RECORDING: RecordingOptions = {
  */
 export async function stopRecordingSafely(recorder: AudioRecorder): Promise<void> {
   try {
-    if (recorder.isRecording) await recorder.stop();
+    // Read native state instead of the React-facing property. The property can
+    // lag briefly while expo-audio is finishing a stop/auto-stop transition.
+    if (recorder.getStatus().isRecording) await recorder.stop();
   } catch {
     // Recorder was already torn down.
   }

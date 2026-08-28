@@ -24,6 +24,7 @@ export type CallPhase = 'idle' | 'connecting' | 'live' | 'speaking';
 
 const CLIP_MS = 380;
 const POLL_MS = 40;
+const RECORDER_SETTLE_MS = 120;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -75,11 +76,21 @@ export function useZennyCall() {
   const phaseRef = useRef<CallPhase>('idle');
   const active = useRef(false);
   const looping = useRef(false);
-    const socketRef = useRef<WebSocket | null>(null);
-    const lastLevel = useRef(0);
-    const freshReply = useRef(true);
+  const socketRef = useRef<WebSocket | null>(null);
+  const lastLevel = useRef(0);
+  const freshReply = useRef(true);
+  const recorderChain = useRef(Promise.resolve());
 
   recorderRef.current = recorder;
+
+  const withRecorder = useCallback(<T,>(operation: () => Promise<T>): Promise<T> => {
+    const run = recorderChain.current.then(operation, operation);
+    recorderChain.current = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }, []);
 
   const updatePhase = useCallback((next: CallPhase) => {
     phaseRef.current = next;
@@ -99,13 +110,19 @@ export function useZennyCall() {
 
   const openMic = useCallback(async () => {
     await setAudioModeAsync(CALL_AUDIO_MODE);
-    const rec = recorderRef.current;
-    await stopRecordingSafely(rec);
-    await rec.prepareToRecordAsync();
-  }, []);
+    await withRecorder(async () => {
+      const rec = recorderRef.current;
+      await stopRecordingSafely(rec);
+      await delay(RECORDER_SETTLE_MS);
+      await rec.prepareToRecordAsync();
+    });
+  }, [withRecorder]);
 
   const releaseMic = useCallback(async () => {
-    await stopRecordingSafely(recorderRef.current);
+    await withRecorder(async () => {
+      await stopRecordingSafely(recorderRef.current);
+      await delay(RECORDER_SETTLE_MS);
+    });
     try {
       await setAudioModeAsync({
         allowsRecording: false,
@@ -115,30 +132,36 @@ export function useZennyCall() {
     } catch {
       // Best-effort teardown.
     }
-  }, []);
+  }, [withRecorder]);
 
   const pumpClips = useCallback(async () => {
-    const rec = recorderRef.current;
     while (active.current) {
       try {
-        if (!rec.isRecording) {
+        const uri = await withRecorder(async () => {
+          const rec = recorderRef.current;
+          await stopRecordingSafely(rec);
+          await delay(RECORDER_SETTLE_MS);
           await rec.prepareToRecordAsync();
-          rec.record({ forDuration: CLIP_MS / 1000 });
-        }
-        const deadline = Date.now() + CLIP_MS + 80;
-        while (active.current && rec.isRecording && Date.now() < deadline) {
-          try {
-            const metering = rec.getStatus().metering;
-            if (typeof metering === 'number') publishLevel(normalizeLevel(metering));
-          } catch {
-            break;
+          if (!active.current) return null;
+          // Use one explicit stop per clip. Combining forDuration with a
+          // manual stop races expo-audio's native auto-stop callback.
+          rec.record();
+          const deadline = Date.now() + CLIP_MS;
+          while (active.current && Date.now() < deadline) {
+            try {
+              const status = rec.getStatus();
+              if (typeof status.metering === 'number') publishLevel(normalizeLevel(status.metering));
+            } catch {
+              break;
+            }
+            await delay(POLL_MS);
           }
-          await delay(POLL_MS);
-        }
-        await stopRecordingSafely(rec);
+          await stopRecordingSafely(rec);
+          await delay(RECORDER_SETTLE_MS);
+          return rec.uri;
+        });
         lastLevel.current = 0;
         setLevel(0);
-        const uri = rec.uri;
         if (uri && active.current) {
           const clip = await readClip(uri);
           if (clip) sendJson({ type: 'audio', mime: clip.mime, data: clip.data });
@@ -147,7 +170,7 @@ export function useZennyCall() {
         await delay(80);
       }
     }
-  }, [publishLevel, sendJson]);
+  }, [publishLevel, sendJson, withRecorder]);
 
   const handleSocketMessage = useCallback(
     (raw: string) => {
@@ -236,38 +259,45 @@ export function useZennyCall() {
 
   const runFallback = useCallback(async () => {
     // No paid STT key: keep the companion usable via the old turn upload.
-    const rec = recorderRef.current;
     while (active.current) {
-      await rec.prepareToRecordAsync();
-      rec.record();
-      updatePhase('live');
-      const started = Date.now();
-      let heard = false;
-      let lastVoice = started;
-      while (active.current) {
-        await delay(80);
-        let metering: number | undefined;
-        try {
-          metering = rec.getStatus().metering;
-        } catch {
-          break;
-        }
-        if (typeof metering === 'number') {
-          publishLevel(normalizeLevel(metering));
-          if (metering > -30) {
-            heard = true;
-            lastVoice = Date.now();
+      const capture = await withRecorder(async () => {
+        const rec = recorderRef.current;
+        await stopRecordingSafely(rec);
+        await delay(RECORDER_SETTLE_MS);
+        await rec.prepareToRecordAsync();
+        if (!active.current) return { heard: false, uri: null };
+        rec.record();
+        updatePhase('live');
+        const started = Date.now();
+        let heard = false;
+        let lastVoice = started;
+        while (active.current) {
+          await delay(80);
+          let metering: number | undefined;
+          try {
+            metering = rec.getStatus().metering;
+          } catch {
+            break;
           }
+          if (typeof metering === 'number') {
+            publishLevel(normalizeLevel(metering));
+            if (metering > -30) {
+              heard = true;
+              lastVoice = Date.now();
+            }
+          }
+          if (heard && Date.now() - lastVoice > 700) break;
+          if (!heard && Date.now() - started > 12000) break;
+          if (Date.now() - started > 15000) break;
         }
-        if (heard && Date.now() - lastVoice > 700) break;
-        if (!heard && Date.now() - started > 12000) break;
-        if (Date.now() - started > 15000) break;
-      }
-      await stopRecordingSafely(rec);
-      if (!active.current || !heard || !rec.uri) continue;
+        await stopRecordingSafely(rec);
+        await delay(RECORDER_SETTLE_MS);
+        return { heard, uri: rec.uri };
+      });
+      if (!active.current || !capture.heard || !capture.uri) continue;
       setPending(true);
       try {
-        const turn = await sendZennyVoiceTurn(rec.uri, tripId);
+        const turn = await sendZennyVoiceTurn(capture.uri, tripId);
         if (!active.current) break;
         setTurns((previous) => [...previous, turn]);
         updatePhase('speaking');
@@ -278,7 +308,7 @@ export function useZennyCall() {
         setPending(false);
       }
     }
-  }, [publishLevel, tripId, updatePhase]);
+  }, [publishLevel, tripId, updatePhase, withRecorder]);
 
   const runLoop = useCallback(async () => {
     if (looping.current) return;
