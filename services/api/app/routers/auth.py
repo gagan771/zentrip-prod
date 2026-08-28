@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 from sqlalchemy import select
@@ -8,6 +8,7 @@ from app.config import settings
 from app.db import get_db
 from app.deps import get_current_user
 from app.models import RefreshToken, User
+from app.rate_limit import limiter
 from app.schemas import (
     GoogleAuthRequest,
     LoginRequest,
@@ -39,7 +40,9 @@ async def _issue_tokens(db: AsyncSession, user: User) -> TokenResponse:
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+@limiter.limit(lambda: settings.rate_limit_auth)
+async def register(request: Request, body: RegisterRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+    del request
     existing = (await db.execute(select(User).where(User.email == body.email))).scalar_one_or_none()
     if existing is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An account with this email already exists")
@@ -51,7 +54,9 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)) ->
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+@limiter.limit(lambda: settings.rate_limit_auth)
+async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+    del request
     user = (await db.execute(select(User).where(User.email == body.email))).scalar_one_or_none()
     if user is None or user.password_hash is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
@@ -60,7 +65,9 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)) -> Token
 
 
 @router.post("/google", response_model=TokenResponse)
-async def login_with_google(body: GoogleAuthRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+@limiter.limit(lambda: settings.rate_limit_auth)
+async def login_with_google(request: Request, body: GoogleAuthRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+    del request
     if not settings.google_client_id_list:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -74,15 +81,21 @@ async def login_with_google(body: GoogleAuthRequest, db: AsyncSession = Depends(
 
     if claims.get("aud") not in settings.google_client_id_list:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token was not issued for this app")
+    if not claims.get("email_verified"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Google account email must be verified before sign-in",
+        )
 
     google_sub = claims["sub"]
     email = claims.get("email")
-    name = claims.get("name") or (email.split("@")[0] if email else "Zentrip Traveler")
+    if not email:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google token did not include an email")
+    name = claims.get("name") or email.split("@")[0]
 
     user = (await db.execute(select(User).where(User.google_sub == google_sub))).scalar_one_or_none()
-    if user is None and email:
-        # Same person may have registered with email/password first — link accounts by email
-        # instead of creating a duplicate.
+    if user is None:
+        # Link by verified email only (email_verified checked above).
         user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
 
     if user is None:
@@ -96,7 +109,9 @@ async def login_with_google(body: GoogleAuthRequest, db: AsyncSession = Depends(
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+@limiter.limit(lambda: settings.rate_limit_auth)
+async def refresh(request: Request, body: RefreshRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+    del request
     token_hash = hash_refresh_token(body.refreshToken)
     token_row = (
         await db.execute(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
@@ -105,7 +120,7 @@ async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)) -> T
     if (
         token_row is None
         or token_row.revoked_at is not None
-        or token_row.expires_at < utcnow()
+        or _as_naive_utc(token_row.expires_at) < utcnow()
     ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token is invalid or expired")
 
@@ -113,6 +128,15 @@ async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)) -> T
     token_row.revoked_at = utcnow()
     user = (await db.execute(select(User).where(User.id == token_row.user_id))).scalar_one()
     return await _issue_tokens(db, user)
+
+
+def _as_naive_utc(value):
+    """Postgres timestamptz may come back aware; app timestamps are naive UTC by convention."""
+    from datetime import timezone
+
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
