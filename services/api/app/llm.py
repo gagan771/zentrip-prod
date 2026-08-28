@@ -10,10 +10,10 @@ import json
 from typing import Any
 
 import anthropic
-import requests
 
 from app.config import settings
 from app.models import Trip
+from app.provider_http import http_session
 
 
 class LLMNotConfiguredError(Exception):
@@ -138,7 +138,7 @@ def _generate_with_openrouter(trip: Trip, candidate_places: list[dict]) -> list[
     if settings.openrouter_app_name:
         headers["X-Title"] = settings.openrouter_app_name
 
-    response = requests.post(
+    response = http_session().post(
         f"{settings.openrouter_base_url.rstrip('/')}/chat/completions",
         headers=headers,
         json={
@@ -149,9 +149,9 @@ def _generate_with_openrouter(trip: Trip, candidate_places: list[dict]) -> list[
             ],
             "tools": [_openrouter_tool()],
             "tool_choice": {"type": "function", "function": {"name": "return_itinerary"}},
-            "max_tokens": 4096,
+            "max_tokens": 768,
         },
-        timeout=60,
+        timeout=45,
     )
     if not response.ok:
         raise LLMProviderError(f"OpenRouter returned HTTP {response.status_code}: {response.text[:500]}")
