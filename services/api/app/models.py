@@ -433,7 +433,8 @@ class KnowledgeGap(Base):
     __tablename__ = "knowledge_gaps"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    normalized_query: Mapped[str] = mapped_column(String(500), nullable=False, unique=True, index=True)
+    gap_key: Mapped[str] = mapped_column(String(540), nullable=False, unique=True)
+    normalized_query: Mapped[str] = mapped_column(String(500), nullable=False, index=True)
     example_query: Mapped[str] = mapped_column(Text, nullable=False)
     intent: Mapped[str] = mapped_column(String(30), nullable=False)
     occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
