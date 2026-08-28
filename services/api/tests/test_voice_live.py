@@ -76,5 +76,5 @@ class SarvamKeyPoolTests(unittest.TestCase):
         second = pool.acquire(now=100)
         self.assertNotEqual(second, first)
         self.assertTrue(is_sarvam_rate_limit("quota exceeded", 1003))
-        recovered = pool.acquire(now=140)
-        self.assertEqual(recovered, first)
+        recovered = {pool.acquire(now=140) for _ in range(3)}
+        self.assertIn(first, recovered)

@@ -75,10 +75,6 @@ class SarvamRateLimited(Exception):
     pass
 
 
-class SarvamHangup(Exception):
-    pass
-
-
 async def run_streaming_stt(pcm_in: asyncio.Queue[bytes | None], on_event: EventHandler) -> None:
     if settings.sarvam_key_list:
         await _run_sarvam(pcm_in, on_event)
@@ -123,8 +119,6 @@ async def _run_sarvam(pcm_in: asyncio.Queue[bytes | None], on_event: EventHandle
         try:
             logger.info("zenny.live using Sarvam key %s (%s ready)", key_label(key), pool.ready_count)
             await _sarvam_session(key, pcm_in, on_event)
-            return
-        except SarvamHangup:
             return
         except SarvamRateLimited:
             pool.mark_limited(key)
