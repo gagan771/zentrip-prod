@@ -1,5 +1,10 @@
 # Zentrip Open-Source Voice Agent Build Plan
 
+Canonical implementation spec: [`voice-agent-build-spec.md`](./voice-agent-build-spec.md)
+(LiveKit + Deepgram Nova-3 + OpenRouter + Deepgram TTS on Oracle Ampere).
+
+This file is the earlier Pipecat-oriented note. Prefer the spec above.
+
 ## Summary
 
 Replace the current upload-based voice loop with a hybrid, open-source architecture:

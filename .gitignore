@@ -10,6 +10,7 @@ __pycache__/
 .env
 .env*.local
 .expo/
+.firecrawl/
 dist/
 .DS_Store
 *.pem
