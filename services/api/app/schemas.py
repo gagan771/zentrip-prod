@@ -86,6 +86,30 @@ class GenerateItineraryResponse(BaseModel):
 class TripTimelineResponse(BaseModel):
     trip: TripOut
     days: list[ItineraryDayOut]
+    bookings: list["TripBookingOut"] = Field(default_factory=list)
+
+
+class TripBookingCreate(BaseModel):
+    kind: str = Field(pattern="^(transport|stay|activity|service)$")
+    title: str = Field(min_length=1, max_length=200)
+    provider: str = Field(min_length=1, max_length=100)
+    startsAt: datetime | None = None
+    endsAt: datetime | None = None
+    reference: str | None = Field(default=None, max_length=100)
+    status: str = Field(default="confirmed", pattern="^(pending|confirmed|cancelled)$")
+    deepLink: str | None = Field(default=None, max_length=1000)
+
+
+class TripBookingOut(BaseModel):
+    id: uuid.UUID
+    kind: str
+    title: str
+    provider: str
+    startsAt: datetime | None = None
+    endsAt: datetime | None = None
+    reference: str | None = None
+    status: str
+    deepLink: str | None = None
 
 
 class TripMemoryNoteCreate(BaseModel):
@@ -116,6 +140,379 @@ class StaySearchRequest(BaseModel):
     checkOut: date
     budgetLevel: str = Field(default="backpacker", pattern="^(backpacker|comfort|luxury|mixed)$")
     guests: int = Field(default=1, ge=1, le=20)
+    travelerStyle: str = Field(default="balanced", pattern="^(balanced|social|quiet|remote_work|trek|solo)$")
+
+
+class GrocerySessionCreate(BaseModel):
+    items: list[dict] = Field(min_length=1, max_length=100)
+
+
+class GrocerySessionOut(BaseModel):
+    id: uuid.UUID
+    provider: str
+    items: list[dict]
+    createdAt: datetime
+
+
+class CommunityEventOut(BaseModel):
+    id: str
+    city: str
+    title: str
+    venue: str
+    category: str
+    startTime: str
+    endTime: str
+    source: str
+    verificationStatus: str
+
+
+class CommunityEventsResponse(BaseModel):
+    events: list[CommunityEventOut]
+    city: str | None = None
+
+
+class BuddyMatchRequest(BaseModel):
+    text: str = Field(min_length=3, max_length=1000)
+
+
+class BuddyMatchOut(BaseModel):
+    groupId: str
+    name: str
+    destination: str
+    dateRange: str
+    members: int
+    budgetBand: str
+    style: str
+    interests: str
+    compatibility: int
+
+
+class BuddyMatchesResponse(BaseModel):
+    matches: list[BuddyMatchOut]
+    parsedRequest: dict
+
+
+class GuardianIncidentCreate(BaseModel):
+    category: str = Field(pattern="^(police|medical|lost|scam|harassment|trail|other)$")
+    note: str | None = Field(default=None, max_length=1000)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+
+
+class GuardianIncidentAction(BaseModel):
+    note: str | None = Field(default=None, max_length=1000)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+
+
+class GuardianIncidentOut(BaseModel):
+    id: uuid.UUID
+    category: str
+    status: str
+    note: str | None
+    latitude: float | None
+    longitude: float | None
+    checkinAt: datetime | None
+    sharedAt: datetime | None
+    resolvedAt: datetime | None
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class TranslationRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+    targetLanguage: str = Field(default="hindi", min_length=2, max_length=30)
+    sourceLanguage: str = Field(default="en", min_length=2, max_length=30)
+
+
+class TranslationResponse(BaseModel):
+    sourceText: str
+    targetLanguage: str
+    translatedText: str
+    pronunciation: str | None
+    confidence: str
+    mode: str
+    context: list[dict] = Field(default_factory=list)
+
+
+class RiskPatternOut(BaseModel):
+    id: uuid.UUID
+    city: str
+    locationLabel: str
+    category: str
+    pattern: str
+    recommendation: str
+    confidence: str
+    sourceName: str
+    sourceUrl: str | None
+    lastVerified: date
+
+
+class RiskPatternsResponse(BaseModel):
+    results: list[RiskPatternOut]
+    city: str | None = None
+    category: str | None = None
+
+
+class ExplorerApplyRequest(BaseModel):
+    city: str = Field(min_length=2, max_length=50)
+    motivation: str = Field(min_length=20, max_length=1000)
+
+
+class ExplorerActivateRequest(BaseModel):
+    safetyAcknowledged: bool
+
+
+class ExplorerProfileOut(BaseModel):
+    id: uuid.UUID
+    status: str
+    reputationPoints: int
+    missionsCompleted: int
+
+
+class ExplorerMissionOut(BaseModel):
+    id: uuid.UUID
+    title: str
+    category: str
+    city: str
+    description: str
+    safetyNote: str
+    requiredEvidence: list
+
+
+class ExplorerSubmissionCreate(BaseModel):
+    text: str = Field(min_length=20, max_length=2000)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    evidenceUrl: str | None = Field(default=None, max_length=1000)
+
+
+class ExplorerSubmissionOut(BaseModel):
+    id: uuid.UUID
+    missionId: uuid.UUID
+    text: str
+    latitude: float | None
+    longitude: float | None
+    evidenceUrl: str | None
+    status: str
+    reviewerNote: str | None
+    createdAt: datetime
+
+
+class ExpertProfileCreate(BaseModel):
+    displayName: str = Field(min_length=2, max_length=120)
+    city: str = Field(min_length=2, max_length=50)
+    specialties: list[str] = Field(min_length=1, max_length=10)
+
+
+class ExpertProfileOut(BaseModel):
+    id: uuid.UUID
+    displayName: str
+    city: str
+    specialties: list[str]
+    status: str
+    rating: float
+
+
+class ExpertCaseCreate(BaseModel):
+    city: str | None = Field(default=None, max_length=50)
+    category: str = Field(pattern="^(local_advice|community_report|content_dispute|non_emergency_safety|other)$")
+    question: str = Field(min_length=10, max_length=2000)
+
+
+class ExpertCaseResponseCreate(BaseModel):
+    response: str = Field(min_length=10, max_length=3000)
+
+
+class ExpertCaseOut(BaseModel):
+    id: uuid.UUID
+    requesterId: uuid.UUID
+    expertId: uuid.UUID | None
+    city: str | None
+    category: str
+    question: str
+    status: str
+    response: str | None
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class ModerationDecision(BaseModel):
+    status: str = Field(pattern="^(approved|rejected|published|needs_review|active|suspended)$")
+    reviewerNote: str | None = Field(default=None, max_length=1000)
+
+
+class KnowledgeSourceCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=200)
+    sourceUrl: str | None = Field(default=None, max_length=500)
+    sourceType: str = Field(default="official", min_length=2, max_length=30)
+    authorityLevel: str = Field(default="primary", min_length=2, max_length=20)
+    licenseNote: str | None = Field(default=None, max_length=500)
+
+
+class KnowledgeEntityCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=200)
+    city: str = Field(min_length=2, max_length=100)
+    fact: str = Field(min_length=10, max_length=2000)
+    entityType: str = Field(default="place", min_length=2, max_length=50)
+
+
+class KnowledgeClaimCreate(BaseModel):
+    entityId: uuid.UUID
+    sourceId: uuid.UUID
+    claim: str = Field(min_length=10, max_length=2000)
+    language: str = Field(default="en", min_length=2, max_length=10)
+    sourceLocator: str | None = Field(default=None, max_length=500)
+    confidence: str = Field(default="estimated", pattern="^(verified|estimated|unverified)$")
+    lastVerified: date
+
+
+class KnowledgeModerationDecision(BaseModel):
+    status: str = Field(pattern="^(published|needs_review|rejected|active|retired)$")
+    reviewerNote: str | None = Field(default=None, max_length=1000)
+
+
+class KnowledgeEditorialClaimOut(BaseModel):
+    id: uuid.UUID
+    entityId: uuid.UUID
+    entityName: str
+    city: str
+    sourceId: uuid.UUID
+    sourceName: str
+    sourceUrl: str | None
+    claim: str
+    language: str
+    confidence: str
+    verificationStatus: str
+    lastVerified: date
+    updatedAt: datetime
+
+
+class KnowledgeEditorialQueueResponse(BaseModel):
+    results: list[KnowledgeEditorialClaimOut]
+    status: str | None = None
+
+
+class KnowledgeModerationAuditOut(BaseModel):
+    id: uuid.UUID
+    reviewerId: uuid.UUID
+    targetType: str
+    targetId: uuid.UUID
+    previousStatus: str | None
+    newStatus: str
+    note: str | None
+    createdAt: datetime
+
+
+class TrailSummaryOut(BaseModel):
+    id: uuid.UUID
+    slug: str
+    name: str
+    region: str
+    summary: str
+    distanceKm: float
+    elevationGainM: int
+    minAltitudeM: int
+    maxAltitudeM: int
+    difficulty: str
+    seasonality: str
+    permitNotes: str | None
+    verificationStatus: str
+    lastVerified: date
+    packageVersion: str
+    navigationReady: bool
+    sourceName: str
+    sourceUrl: str | None
+
+
+class TrailWaypointOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    kind: str
+    latitude: float
+    longitude: float
+    elevationM: int | None
+    description: str
+    sourceConfidence: str
+
+
+class TrailHazardOut(BaseModel):
+    id: uuid.UUID
+    category: str
+    description: str
+    latitude: float | None
+    longitude: float | None
+    sourceKind: str
+    confidence: str
+    status: str
+    observedAt: datetime
+    expiresAt: datetime | None
+
+
+class TrailDetailOut(TrailSummaryOut):
+    routeGeojson: dict
+    waypoints: list[TrailWaypointOut] = Field(default_factory=list)
+    hazards: list[TrailHazardOut] = Field(default_factory=list)
+
+
+class TrailPackageOut(BaseModel):
+    trail: TrailDetailOut
+    emergencyNumbers: list[dict]
+    packageWarning: str
+    generatedAt: datetime
+
+
+class PeakOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    elevationM: int
+    latitude: float
+    longitude: float
+    distanceKm: float
+    bearingDegrees: float
+    direction: str
+    confidence: str
+    description: str
+    sourceName: str
+    lastVerified: date
+
+
+class PeaksResponse(BaseModel):
+    results: list[PeakOut]
+    latitude: float
+    longitude: float
+    bearingDegrees: float | None = None
+
+
+class TrailHazardCreate(BaseModel):
+    category: str = Field(min_length=2, max_length=40)
+    description: str = Field(min_length=10, max_length=1000)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    sourceKind: str = Field(pattern="^(official_notice|community_report|explorer_submission|editorial)$")
+    confidence: str = Field(pattern="^(verified|estimated|unverified)$")
+    expiresAt: datetime | None = None
+
+
+class TrailModerationDecision(BaseModel):
+    status: str = Field(pattern="^(verified|preview|rejected|published|active|retired|needs_review)$")
+    reviewerNote: str | None = Field(default=None, max_length=1000)
+
+
+class StayScoreComponentOut(BaseModel):
+    key: str
+    label: str
+    score: int = Field(ge=0, le=100)
+    weight: int = Field(ge=0, le=100)
+
+
+class ProviderHandoffOut(BaseModel):
+    key: str
+    displayName: str
+    category: str
+    url: str
+    live: bool = True
+    note: str
 
 
 class StayResultOut(BaseModel):
@@ -139,6 +536,8 @@ class StayResultOut(BaseModel):
     score: float
     badges: list[str]
     explanation: str
+    scoreBreakdown: list[StayScoreComponentOut]
+    contextSignals: list[str]
 
 
 class StaySearchResponse(BaseModel):
@@ -146,6 +545,7 @@ class StaySearchResponse(BaseModel):
     isDemoData: bool
     liveCheckRequired: bool
     message: str
+    handoffs: list[ProviderHandoffOut] = Field(default_factory=list)
 
 
 class OnboardingCallCreate(BaseModel):
@@ -195,11 +595,19 @@ class CompareResultOut(BaseModel):
     explanation: str
 
 
+class OnboardingConfigOut(BaseModel):
+    ready: bool
+    missing: list[str]
+    recordingEnabled: bool = False
+    publicBaseUrlSet: bool
+
+
 class CompareSearchResponse(BaseModel):
     results: list[CompareResultOut]
     isDemoData: bool
     liveCheckRequired: bool
     message: str
+    handoffs: list[ProviderHandoffOut] = Field(default_factory=list)
 
 
 class OutcomeCreate(BaseModel):
@@ -218,7 +626,7 @@ class KnowledgeCitationOut(BaseModel):
     sourceName: str
     sourceUrl: str | None = None
     sourceLocator: str | None = None
-    lastVerified: date
+    lastVerified: date | None = None
     confidence: str
 
 
@@ -239,6 +647,7 @@ class GuideIdentifyResponse(BaseModel):
     confidence: str  # "high" | "medium" | "low" | "none"
     reply: str
     citations: list[KnowledgeCitationOut] = Field(default_factory=list)
+    contentMode: str = "overview"
 
 
 class KnowledgeSearchResponse(BaseModel):
@@ -249,6 +658,7 @@ class KnowledgeSearchResponse(BaseModel):
 
 
 class ZennyVoiceTurnResponse(BaseModel):
+    sessionId: str
     transcript: str
     spokenText: str
     intent: str
@@ -256,3 +666,15 @@ class ZennyVoiceTurnResponse(BaseModel):
     confidence: str
     citations: list[KnowledgeCitationOut] = Field(default_factory=list)
     items: list[str] = Field(default_factory=list)
+
+
+class ZennyLiveSessionRequest(BaseModel):
+    sessionId: str | None = None
+    tripId: uuid.UUID | None = None
+
+
+class ZennyLiveSessionResponse(BaseModel):
+    sessionId: str
+    wsUrl: str
+    ticket: str
+    sttProvider: str

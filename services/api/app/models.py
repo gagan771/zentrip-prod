@@ -33,6 +33,7 @@ class User(Base):
     google_sub: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
     language: Mapped[str] = mapped_column(String(10), default="en", nullable=False)
     country: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    role: Mapped[str] = mapped_column(String(20), default="traveler", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 
     refresh_tokens: Mapped[list["RefreshToken"]] = relationship(back_populates="user", cascade="all, delete-orphan")
@@ -57,6 +58,25 @@ class RefreshToken(Base):
     user: Mapped[User] = relationship(back_populates="refresh_tokens")
 
 
+class GuardianIncident(Base):
+    """Deterministic Guardian incident state, never decided by an LLM."""
+
+    __tablename__ = "guardian_incidents"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    category: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="created", nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    checkin_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    shared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
+
+
 class Trip(Base):
     """Per 02-ai-trip-planner.md / master spec §41 `Trip` entity — kept deliberately
     minimal for Phase 1: enough to generate and store an itinerary, not the full
@@ -76,6 +96,7 @@ class Trip(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 
     days: Mapped[list["ItineraryDay"]] = relationship(back_populates="trip", cascade="all, delete-orphan")
+    bookings: Mapped[list["TripBooking"]] = relationship(back_populates="trip", cascade="all, delete-orphan")
 
 
 class ItineraryDay(Base):
@@ -96,6 +117,27 @@ class ItineraryDay(Base):
     trip: Mapped[Trip] = relationship(back_populates="days")
 
 
+class TripBooking(Base):
+    """A user-owned booking/handoff record shown on the Journey timeline."""
+
+    __tablename__ = "trip_bookings"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trip_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("trips.id"), nullable=False, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    provider: Mapped[str] = mapped_column(String(100), nullable=False)
+    starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reference: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="confirmed")
+    deep_link: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    trip: Mapped[Trip] = relationship(back_populates="bookings")
+
+
 class KnowledgeEntity(Base):
     """Text-only Knowledge Base per 07-historical-cultural-guide.md — Phase 1 scope is
     exactly this: fact + source + confidence, no camera/landmark identification yet.
@@ -107,6 +149,8 @@ class KnowledgeEntity(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     city: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     fact: Mapped[str] = mapped_column(Text, nullable=False)
     source: Mapped[str] = mapped_column(String(200), nullable=False)
     source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -172,6 +216,92 @@ class KnowledgeAlias(Base):
     language: Mapped[str] = mapped_column(String(10), default="en", nullable=False)
 
 
+class KnowledgeModerationAudit(Base):
+    """Immutable audit record for staff edits to citation-first knowledge content."""
+
+    __tablename__ = "knowledge_moderation_audits"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    reviewer_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    target_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    target_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    previous_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    new_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class Trail(Base):
+    """Offline trail catalog entry; preview routes are never treated as navigation-ready."""
+
+    __tablename__ = "trails"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    slug: Mapped[str] = mapped_column(String(120), unique=True, index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    region: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    distance_km: Mapped[float] = mapped_column(Float, nullable=False)
+    elevation_gain_m: Mapped[int] = mapped_column(Integer, nullable=False)
+    min_altitude_m: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_altitude_m: Mapped[int] = mapped_column(Integer, nullable=False)
+    difficulty: Mapped[str] = mapped_column(String(20), nullable=False)
+    seasonality: Mapped[str] = mapped_column(String(200), nullable=False)
+    permit_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    route_geojson: Mapped[dict] = mapped_column(_JSON, nullable=False)
+    source_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    verification_status: Mapped[str] = mapped_column(String(30), default="preview", nullable=False)
+    last_verified: Mapped[date] = mapped_column(Date, nullable=False)
+    package_version: Mapped[str] = mapped_column(String(30), default="1", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class TrailWaypoint(Base):
+    __tablename__ = "trail_waypoints"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trail_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("trails.id"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(150), nullable=False)
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    latitude: Mapped[float] = mapped_column(Float, nullable=False)
+    longitude: Mapped[float] = mapped_column(Float, nullable=False)
+    elevation_m: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    source_confidence: Mapped[str] = mapped_column(String(20), default="estimated", nullable=False)
+
+
+class TrailHazard(Base):
+    __tablename__ = "trail_hazards"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trail_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("trails.id"), nullable=False, index=True)
+    category: Mapped[str] = mapped_column(String(40), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    confidence: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Peak(Base):
+    __tablename__ = "peaks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(150), nullable=False, index=True)
+    elevation_m: Mapped[int] = mapped_column(Integer, nullable=False)
+    latitude: Mapped[float] = mapped_column(Float, nullable=False)
+    longitude: Mapped[float] = mapped_column(Float, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    source_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="preview", nullable=False)
+    last_verified: Mapped[date] = mapped_column(Date, nullable=False)
+
+
 class TripMemoryNote(Base):
     """Trip memory tier per 01-zentrip-companion.md §3 — short facts scoped to one
     trip ("staying in Udaipur until Friday," "already visited City Palace"), distinct
@@ -230,6 +360,18 @@ class OnboardingCall(Base):
     answers: Mapped[dict] = mapped_column(_JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
+
+
+class GrocerySession(Base):
+    """Saved provider hand-off state, scoped to the traveler who opened it."""
+
+    __tablename__ = "grocery_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    items: Mapped[list[dict]] = mapped_column(_JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 
 
 class ProviderObservation(Base):
@@ -342,3 +484,92 @@ class Outcome(Base):
     outcome_type: Mapped[str] = mapped_column(String(30), nullable=False)  # opened|selected|booked|dismissed
     details: Mapped[dict] = mapped_column(_JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class RiskPattern(Base):
+    """Pattern-based, sourced risk information; never a named-person accusation."""
+
+    __tablename__ = "risk_patterns"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    city: Mapped[str] = mapped_column(String(50), nullable=False)
+    location_label: Mapped[str] = mapped_column(String(150), nullable=False)
+    category: Mapped[str] = mapped_column(String(30), nullable=False)
+    pattern: Mapped[str] = mapped_column(Text, nullable=False)
+    recommendation: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    last_verified: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="published", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class ExplorerProfile(Base):
+    __tablename__ = "explorer_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), unique=True, nullable=False)
+    motivation: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(20), default="applicant", nullable=False)
+    reputation_points: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    missions_completed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
+
+
+class ExplorerMission(Base):
+    __tablename__ = "explorer_missions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    category: Mapped[str] = mapped_column(String(30), nullable=False)
+    city: Mapped[str] = mapped_column(String(50), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    safety_note: Mapped[str] = mapped_column(Text, nullable=False)
+    required_evidence: Mapped[list] = mapped_column(_JSON, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="published", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class ExplorerSubmission(Base):
+    __tablename__ = "explorer_submissions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    explorer_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("explorer_profiles.id"), nullable=False)
+    mission_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("explorer_missions.id"), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evidence_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="submitted", nullable=False)
+    reviewer_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class ExpertProfile(Base):
+    __tablename__ = "expert_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), unique=True, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    city: Mapped[str] = mapped_column(String(50), nullable=False)
+    specialties: Mapped[list] = mapped_column(_JSON, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="applicant", nullable=False)
+    rating: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+
+class ExpertCase(Base):
+    __tablename__ = "expert_cases"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    requester_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    expert_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("expert_profiles.id"), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    category: Mapped[str] = mapped_column(String(30), nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="waiting", nullable=False)
+    response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
