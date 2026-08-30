@@ -31,6 +31,7 @@
       background: #f7fbee;
       font-size: 1rem;
     }
+    #question { margin-top: 1rem; }
     .row { display: flex; gap: 0.5rem; margin-top: 1rem; flex-wrap: wrap; }
     button {
       border: 0;
@@ -57,8 +58,9 @@
 </head>
 <body>
   <main>
-    <h1>Zenny web call</h1>
-    <p class="lead">Local test only. Sign in, then start a call. Allow the microphone when the browser asks.</p>
+    <h1>Call Zenny</h1>
+    <p class="lead">She knows your trip. Sign in, then start a call. Allow the microphone when the browser asks.</p>
+    <p id="trip" class="lead"></p>
     <label for="email">Email</label>
     <input id="email" type="email" autocomplete="username" />
     <label for="password">Password</label>
@@ -72,6 +74,11 @@
     <div class="row">
       <button type="button" id="start" disabled>Start call</button>
       <button type="button" class="secondary" id="hangup" disabled>Hang up</button>
+    </div>
+    <label for="question">Test Zenny's shared knowledge gateway</label>
+    <input id="question" type="text" placeholder="Is Qutb Minar open now?" />
+    <div class="row">
+      <button type="button" class="secondary" id="ask" disabled>Ask live</button>
     </div>
     <div id="status">Sign in to check LiveKit.</div>
     <div id="remote"></div>
@@ -102,15 +109,45 @@
       }
     }
 
+    function renderTrip(ctx) {
+      const el = document.getElementById("trip");
+      if (!ctx || !ctx.hasTrip) {
+        el.textContent = "No saved trip yet — Zenny will not invent one.";
+        return;
+      }
+      const stops = (ctx.focusStops || []).join(", ");
+      if (ctx.focusKind === "today" && ctx.focusCity) {
+        el.textContent = stops
+          ? "Today in " + ctx.focusCity + ": " + stops + ". Ask her about those."
+          : "Today you are in " + ctx.focusCity + ".";
+        return;
+      }
+      if (ctx.focusKind === "upcoming" && ctx.focusCity) {
+        el.textContent = "Next planned day is " + ctx.focusCity + (ctx.focusDate ? " on " + ctx.focusDate : "") + ".";
+        return;
+      }
+      const cities = (ctx.cities || []).join(", ");
+      el.textContent = cities ? "Your trip: " + cities + "." : "You have a saved trip.";
+    }
+
     async function refreshStatus() {
       const response = await fetch("/v1/zenny/voice/status", { headers: authHeaders() });
       if (!response.ok) throw new Error(await readError(response));
       const data = await response.json();
       document.getElementById("start").disabled = !data.livekitReady;
+      document.getElementById("ask").disabled = false;
+      try {
+        const context = await fetch("/v1/zenny/voice/context", { headers: authHeaders() });
+        if (context.ok) renderTrip(await context.json());
+      } catch {
+        // Status still works if the trip snapshot is missing.
+      }
       setStatus(
-        data.livekitReady
-          ? "LiveKit is ready. Start a call."
-          : "API is up, but LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET on the API."
+        data.knowledgeMode === "shared_gateway"
+          ? "Shared gateway is ready. Ask live checks reviewed KB + allowlisted official pages. LiveKit call: " + (data.livekitReady ? "ready." : "not running.")
+          : data.livekitReady
+            ? "LiveKit is ready. Start a call."
+            : "API is up, but LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET on the API."
       );
     }
 
@@ -166,6 +203,28 @@
     }
 
     document.getElementById("hangup").onclick = hangUp;
+
+    document.getElementById("ask").onclick = async () => {
+      const question = document.getElementById("question").value.trim();
+      if (!question) return;
+      try {
+        document.getElementById("ask").disabled = true;
+        setStatus("Checking Zenny's reviewed knowledge and live official sources…");
+        const response = await fetch("/v1/agent/message", {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({ text: question }),
+        });
+        if (!response.ok) throw new Error(await readError(response));
+        const answer = await response.json();
+        const sources = (answer.citations || []).map((item) => item.sourceUrl).filter(Boolean);
+        setStatus(answer.reply + "\n\nConfidence: " + answer.confidence + (sources.length ? "\nSource: " + sources[0] : ""));
+      } catch (error) {
+        setStatus(String(error.message || error));
+      } finally {
+        document.getElementById("ask").disabled = false;
+      }
+    };
 
     document.getElementById("start").onclick = async () => {
       try {

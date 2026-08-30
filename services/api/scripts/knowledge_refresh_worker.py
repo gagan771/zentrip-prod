@@ -14,11 +14,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from pathlib import Path
 
 from sqlalchemy import select
 
 from app.db import AsyncSessionLocal
 from app.knowledge_refresh import build_refresh_summary
+from app.knowledge_refresh_adapters import refresh_manifest
 from app.models import DestinationProfile, KnowledgeObservation
 
 
@@ -52,7 +54,14 @@ def main() -> None:
     parser.add_argument("--once", action="store_true", help="Run one refresh scan")
     parser.add_argument("--watch", action="store_true", help="Run repeatedly")
     parser.add_argument("--interval-seconds", type=int, default=900)
+    parser.add_argument("--manifest", type=Path, help="HTTPS source manifest; emit moderation candidates")
     args = parser.parse_args()
+    if args.manifest:
+        specs = json.loads(args.manifest.read_text(encoding="utf-8"))
+        if not isinstance(specs, list):
+            raise SystemExit("refresh manifest must contain a JSON list")
+        print(json.dumps(asyncio.run(refresh_manifest(specs)), ensure_ascii=False, indent=2))
+        return
     if args.watch:
         asyncio.run(watch(args.interval_seconds))
     else:

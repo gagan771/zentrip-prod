@@ -86,6 +86,8 @@ class TripConstraintsInput(BaseModel):
     currency: str = Field(default="INR", min_length=3, max_length=3)
     avoid: list[str] = Field(default_factory=list, max_length=20)
     mustInclude: list[str] = Field(default_factory=list, max_length=20)
+    weatherPreference: str | None = Field(default=None, max_length=30)
+    weatherAlerts: dict = Field(default_factory=dict)
 
 
 class AdaptivePlanCreate(BaseModel):
@@ -149,9 +151,15 @@ class ActivityOut(BaseModel):
     placeId: str | None = None
     placeName: str
     durationMinutes: int
+    travelMinutes: int = 0
+    estimatedCostINR: int = 0
     reason: str
     bookingRequired: bool = False
     status: str = "planned"
+    sourceClaimId: str | None = None
+    sourceUrl: str | None = None
+    lastVerified: date | None = None
+    confidence: str | None = None
 
 
 class ItineraryDayOut(BaseModel):
@@ -225,11 +233,14 @@ class TripMemoryNoteOut(BaseModel):
 
 class UserPreferenceCreate(BaseModel):
     statement: str = Field(min_length=1, max_length=500)
+    scope: str = Field(default="long_term", pattern="^(long_term|trip)$")
 
 
 class UserPreferenceOut(BaseModel):
     id: uuid.UUID
     statement: str
+    scope: str = "long_term"
+    confidence: float = 1.0
     createdAt: datetime
 
 
@@ -593,6 +604,8 @@ class KnowledgeImprovementReport(BaseModel):
     openGaps: int
     resolvedGaps: int
     topGaps: list[dict]
+    byIntent: dict[str, dict[str, int]] = Field(default_factory=dict)
+    qualityTelemetry: dict = Field(default_factory=dict)
 
 
 class KnowledgeObservationOut(BaseModel):
@@ -608,6 +621,7 @@ class KnowledgeObservationOut(BaseModel):
     value: dict
     observedAt: date
     refreshAfter: date
+    fingerprint: str | None = None
     status: str
     reviewerId: uuid.UUID | None = None
     reviewerNote: str | None = None
@@ -865,6 +879,52 @@ class CompareSearchRequest(BaseModel):
     tripId: uuid.UUID | None = None
 
 
+class CabSearchRequest(BaseModel):
+    pickup: str = Field(default="Current location", min_length=2, max_length=120)
+    drop: str = Field(default="", max_length=120)
+    pickupLat: float | None = None
+    pickupLng: float | None = None
+    dropLat: float | None = None
+    dropLng: float | None = None
+    tripId: uuid.UUID | None = None
+
+
+class CabOptionOut(BaseModel):
+    provider: str
+    productHint: str
+    provenance: str
+    fareInr: int | None = None
+    etaMinutes: int | None = None
+    url: str
+    note: str
+    smartPickupHint: str | None = None
+
+
+class CabPartnerOut(BaseModel):
+    key: str
+    name: str
+    status: str
+    applyUrl: str
+    docsUrl: str
+    why: str
+    whatToSend: str
+
+
+class CabSearchResponse(BaseModel):
+    pickup: str
+    drop: str
+    pickupLat: float | None = None
+    pickupLng: float | None = None
+    dropLat: float | None = None
+    dropLng: float | None = None
+    isLive: bool
+    message: str
+    smartPickupHint: str
+    options: list[CabOptionOut]
+    handoffs: list[ProviderHandoffOut] = Field(default_factory=list)
+    partners: list[CabPartnerOut] = Field(default_factory=list)
+
+
 class CompareResultOut(BaseModel):
     recommendationId: uuid.UUID
     observationId: uuid.UUID
@@ -985,6 +1045,7 @@ class ZennyVoiceTurnResponse(BaseModel):
     confidence: str
     citations: list[KnowledgeCitationOut] = Field(default_factory=list)
     items: list[str] = Field(default_factory=list)
+    latencyMs: int | None = None
     brain: str = "zentrip"
 
 
@@ -997,8 +1058,24 @@ class ZennyVoiceStatusResponse(BaseModel):
     knowledgeMode: str = "shared_gateway"
 
 
+class ZennyVoiceContextResponse(BaseModel):
+    hasTrip: bool
+    cities: list[str] = Field(default_factory=list)
+    startDate: str | None = None
+    endDate: str | None = None
+    budget: str | None = None
+    status: str | None = None
+    originCountry: str | None = None
+    focusKind: str | None = None
+    focusCity: str | None = None
+    focusDate: str | None = None
+    focusStops: list[str] = Field(default_factory=list)
+    livekitReady: bool = False
+
+
 class ZennyLivekitTokenRequest(BaseModel):
     sessionId: str | None = None
+    tripId: uuid.UUID | None = None
 
 
 class ZennyLivekitTokenResponse(BaseModel):

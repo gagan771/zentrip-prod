@@ -2,6 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -13,7 +14,17 @@ import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { BudgetLevel, CompareResult, recordCompareOutcome, searchCompare, searchStays, StayResult } from '../../lib/compare';
+import { API_BASE_URL } from '../../lib/api-client';
+import {
+  BudgetLevel,
+  CompareResult,
+  listCabPartners,
+  recordCompareOutcome,
+  searchCabs,
+  searchCompare,
+  searchStays,
+  StayResult,
+} from '../../lib/compare';
 import { HandoffStrip } from '../../components/booking/BookingHandoffButton';
 import { prefillFromSearchParams, prefillFromTrip, prefillSearchParams } from '../../lib/trip-prefill';
 import { getTrip } from '../../lib/trips';
@@ -45,6 +56,10 @@ function addDays(base: Date, days: number) {
   const next = new Date(base);
   next.setDate(next.getDate() + days);
   return next;
+}
+
+function firstParam(value?: string | string[]) {
+  return Array.isArray(value) ? value[0] : value;
 }
 
 function timeLabel(dateTime: string) {
@@ -302,6 +317,9 @@ export default function CompareScreen() {
     budgetLevel?: string | string[];
     prefill?: string | string[];
     source?: string | string[];
+    pickup?: string | string[];
+    drop?: string | string[];
+    tab?: string | string[];
   }>();
   const user = useStore((s) => s.user);
   const setUser = useStore((s) => s.setUser);
@@ -318,6 +336,8 @@ export default function CompareScreen() {
   const [stayStyle, setStayStyle] = useState('balanced');
   const [tripPrefillLabel, setTripPrefillLabel] = useState<string | null>(null);
   const [prefillSource, setPrefillSource] = useState<'trip' | 'hop' | 'stay' | null>(null);
+  const [pickup, setPickup] = useState('Current location');
+  const [drop, setDrop] = useState('');
 
   const tripQuery = useQuery({
     queryKey: ['trip', activeTripId],
@@ -338,6 +358,8 @@ export default function CompareScreen() {
     setBudgetLevel(seed.budgetLevel);
     setTripPrefillLabel(seed.label);
     setPrefillSource(seed.source);
+    setDrop(seed.stayCity || seed.destination);
+    setPickup('Current location');
   }
 
   useEffect(() => {
@@ -362,6 +384,36 @@ export default function CompareScreen() {
   const stayMutation = useMutation({
     mutationFn: () => searchStays({ city: stayCity, checkIn, checkOut, budgetLevel, travelerStyle: stayStyle, guests: 1 }),
   });
+  const cabMutation = useMutation({
+    mutationFn: () =>
+      searchCabs({
+        pickup: pickup.trim() || 'Current location',
+        drop: (drop.trim() || destination).trim(),
+        tripId: activeTripId ?? undefined,
+      }),
+  });
+  const partnersQuery = useQuery({
+    queryKey: ['cab-partners'],
+    queryFn: listCabPartners,
+    enabled: user?.id !== 'guest',
+  });
+  const cabAutostart = useRef(false);
+
+  useEffect(() => {
+    const nextPickup = firstParam(params.pickup);
+    const nextDrop = firstParam(params.drop);
+    if (nextPickup) setPickup(nextPickup);
+    if (nextDrop) setDrop(nextDrop);
+  }, [params.pickup, params.drop]);
+
+  useEffect(() => {
+    if (cabAutostart.current) return;
+    if (firstParam(params.tab) !== 'cabs') return;
+    const dest = (drop || destination).trim();
+    if (dest.length < 2) return;
+    cabAutostart.current = true;
+    cabMutation.mutate();
+  }, [cabMutation, destination, drop, params.tab]);
 
   function clearPrefillBanner() {
     setTripPrefillLabel(null);
@@ -460,6 +512,105 @@ export default function CompareScreen() {
             </Text>
           </View>
         ) : null}
+
+        <View style={styles.formCard}>
+          <View style={styles.badgeRow}>
+            <Ionicons name="car-outline" size={12} color={colors.primary} />
+            <Text style={styles.eyebrow}>GET THERE · LAST MILE</Text>
+          </View>
+          <Text style={styles.fieldLabel}>Pickup</Text>
+          <TextInput
+            style={styles.input}
+            value={pickup}
+            onChangeText={setPickup}
+            placeholder="Current location"
+            placeholderTextColor={colors.inkSubtle}
+          />
+          <Text style={styles.fieldLabel}>Drop</Text>
+          <View style={styles.cityChips}>
+            {CITIES.map((city) => (
+              <TouchableOpacity
+                key={`cab-${city}`}
+                style={[styles.cityChip, drop === city && styles.cityChipActive]}
+                onPress={() => setDrop(city)}
+              >
+                <Text style={drop === city ? styles.cityTextActive : styles.cityText}>{city}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <TextInput
+            style={styles.input}
+            value={drop}
+            onChangeText={setDrop}
+            placeholder={destination || 'Today’s city or a monument'}
+            placeholderTextColor={colors.inkSubtle}
+          />
+          {cabMutation.isError ? (
+            <View style={styles.errorBanner}>
+              <Ionicons name="alert-circle" size={14} color={colors.error} />
+              <Text style={styles.errorText}>
+                {cabMutation.error instanceof Error ? cabMutation.error.message : 'Cab search failed'}
+              </Text>
+            </View>
+          ) : null}
+          <TouchableOpacity
+            style={[styles.searchButton, cabMutation.isPending && styles.searchButtonDisabled]}
+            onPress={() => cabMutation.mutate()}
+            disabled={cabMutation.isPending}
+            activeOpacity={0.85}
+          >
+            {cabMutation.isPending ? (
+              <ActivityIndicator color={colors.white} />
+            ) : (
+              <View style={styles.btnInner}>
+                <Ionicons name="navigate-outline" size={16} color={colors.white} style={{ marginRight: 6 }} />
+                <Text style={styles.searchButtonText}>Open ride apps</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+          {cabMutation.data ? (
+            <View style={styles.cabResults}>
+              <View style={styles.notice}>
+                <Ionicons name="information-circle-outline" size={16} color={colors.primary} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.noticeTitle}>
+                    {cabMutation.data.isLive ? 'LIVE PARTNER QUOTES' : 'OFFICIAL APP HANDOFF'}
+                  </Text>
+                  <Text style={styles.noticeBody}>{cabMutation.data.message}</Text>
+                </View>
+              </View>
+              <Text style={styles.cabHint}>{cabMutation.data.smartPickupHint}</Text>
+              <HandoffStrip
+                title="CABS"
+                subtitle={`${cabMutation.data.pickup} → ${cabMutation.data.drop} · confirm fare on the app`}
+                handoffs={cabMutation.data.handoffs ?? []}
+                category="cab"
+              />
+            </View>
+          ) : null}
+          <TouchableOpacity
+            style={styles.applyRow}
+            onPress={() => void Linking.openURL(`${API_BASE_URL.replace(/\/$/, '')}/v1/compare/cabs/apply`)}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="briefcase-outline" size={16} color={colors.primary} />
+            <Text style={styles.applyText}>Apply for live cab quotes (Ola, Uber, ONDC, Namma Yatri)</Text>
+            <Ionicons name="open-outline" size={14} color={colors.primary} />
+          </TouchableOpacity>
+          {partnersQuery.data?.length ? (
+            <View style={styles.partnerChips}>
+              {partnersQuery.data.map((partner) => (
+                <TouchableOpacity
+                  key={partner.key}
+                  style={styles.partnerChip}
+                  onPress={() => void Linking.openURL(partner.applyUrl)}
+                >
+                  <Text style={styles.partnerChipText}>{partner.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          ) : null}
+        </View>
 
         <View style={styles.formCard}>
           <Text style={styles.fieldLabel}>Quick corridor routes</Text>
@@ -974,6 +1125,44 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     gap: spacing.md,
     ...shadows.md,
+  },
+  cabResults: {
+    gap: spacing.md,
+  },
+  cabHint: {
+    color: colors.inkMuted,
+    fontSize: typography.fontSize.caption,
+    lineHeight: typography.lineHeight.body,
+  },
+  applyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingTop: spacing.xs,
+  },
+  applyText: {
+    flex: 1,
+    color: colors.primary,
+    fontSize: typography.fontSize.caption,
+    fontWeight: '700',
+  },
+  partnerChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  partnerChip: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.full,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    backgroundColor: colors.cardSubtle,
+  },
+  partnerChipText: {
+    color: colors.ink,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '700',
   },
   routePickersRow: {
     flexDirection: 'row',

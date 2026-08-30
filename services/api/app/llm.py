@@ -46,6 +46,8 @@ _ITINERARY_TOOL = {
                                     "placeId": {"type": "string", "description": "Must exactly match a candidate placeId."},
                                     "placeName": {"type": "string"},
                                     "durationMinutes": {"type": "integer"},
+                                    "travelMinutes": {"type": "integer", "description": "Known transfer minutes; use 0 when unknown."},
+                                    "estimatedCostINR": {"type": "integer", "description": "Reviewed estimate in INR; use 0 when unknown."},
                                     "reason": {"type": "string", "description": "Must trace back to a candidate place's fact."},
                                     "bookingRequired": {"type": "boolean"},
                                 },
@@ -68,11 +70,19 @@ _SYSTEM_PROMPT = (
     "accessibility, budget, season, trip length, and explicit constraints. Prefer candidates "
     "with higher plannerScore and good season/accessibility fit, but never violate hard constraints. "
     "Respect destination safety notes, permit requirements, altitude acclimatisation, wildlife "
-    "uncertainty, religious-site etiquette, and transfer buffers. Treat stale operational data "
-    "as a warning only and never present it as a current opening, price, or availability fact. "
+    "uncertainty, religious-site etiquette, and transfer buffers. Follow plannerContext's "
+    "citySequence in order: do not move a day to another city or place an activity in a "
+    "different city from that day's city. Respect maxActivitiesPerDay and "
+    "maxDailyTravelMinutes; include travelMinutes when known and keep the daily total within "
+    "the limit. Use routeSkeleton as the deterministic scaffold: prefer its candidatePlaceIds "
+    "and never add a place outside candidatePlaces. "
+    "the limit. Treat stale operational data as a warning only and never present it as a current "
+    "opening, price, or availability fact. Use reviewed opening hours when present, and include "
+    "estimatedCostINR only when the candidate supplies it. "
     "Use a candidate's exact placeId and placeName whenever you include it. Do not invent "
     "places, opening hours, prices, travel times, or historical facts. If a city has no good "
-    "candidates, include fewer activities for that day rather than making one up. Call the "
+    "candidates, leave that day empty rather than making one up. If validationFeedback is "
+    "present, repair every listed issue before returning the tool call. Call the "
     "return_itinerary tool with your answer."
 )
 

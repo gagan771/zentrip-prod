@@ -62,6 +62,8 @@ class AgentIntentTests(unittest.TestCase):
 
     def test_itinerary_language_still_trip_planning(self) -> None:
         self.assertEqual(classify_intent("plan 3 days in Jaipur"), "trip_planning")
+        self.assertEqual(classify_intent("what should I do today"), "trip_planning")
+        self.assertEqual(classify_intent("is the Taj open today"), "chat")
 
     def test_destination_request_routes_to_recommendation_engine(self) -> None:
         self.assertEqual(classify_intent("suggest a quiet beach destination in India"), "recommendation")

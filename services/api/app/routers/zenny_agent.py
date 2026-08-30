@@ -18,6 +18,7 @@ from app.db import get_db
 from app.deps import get_current_user
 from app.models import User
 from app.livekit_tokens import livekit_ready, mint_livekit_token
+from app.trip_context import format_trip_context, load_voice_trip, load_voice_trip_days, trip_context_json
 from app.rate_limit import limiter
 from app.redis_client import redis
 from app.schemas import (
@@ -25,6 +26,7 @@ from app.schemas import (
     ZennyAgentSessionResponse,
     ZennyLivekitTokenRequest,
     ZennyLivekitTokenResponse,
+    ZennyVoiceContextResponse,
     ZennyVoiceStatusResponse,
 )
 from app.sarvam_voice_agent import VoiceAgentError, create_call_agent, voice_agent_ready
@@ -70,6 +72,18 @@ async def zenny_web_call() -> FileResponse:
     return FileResponse(_WEB_CALL_PAGE, media_type="text/html; charset=utf-8")
 
 
+@router.get("/context", response_model=ZennyVoiceContextResponse)
+async def voice_context(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ZennyVoiceContextResponse:
+    trip = await load_voice_trip(db, user.id)
+    days = await load_voice_trip_days(db, trip.id) if trip is not None else []
+    payload = format_trip_context(trip, days=days)
+    payload["livekitReady"] = livekit_ready()
+    return ZennyVoiceContextResponse.model_validate(payload)
+
+
 @router.get("/status", response_model=ZennyVoiceStatusResponse)
 async def voice_status(user: User = Depends(get_current_user)) -> ZennyVoiceStatusResponse:
     del user
@@ -88,12 +102,8 @@ async def voice_status(user: User = Depends(get_current_user)) -> ZennyVoiceStat
 async def create_livekit_token(
     request: Request,
     user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ) -> ZennyLivekitTokenResponse:
-    if settings.voice_use_shared_gateway:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Shared Zenny voice is enabled. Use /v1/zenny/voice/live/session so Deepgram turns use the canonical gateway.",
-        )
     if not livekit_ready():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -102,7 +112,14 @@ async def create_livekit_token(
     body = ZennyLivekitTokenRequest.model_validate(await _json_body(request))
     session_id = body.sessionId or str(uuid.uuid4())
     room = f"zenny-{str(user.id)[:8]}-{session_id.replace('-', '')[:10]}"
-    token = mint_livekit_token(identity=str(user.id), name=user.name, room=room)
+    trip = await load_voice_trip(db, user.id, body.tripId)
+    days = await load_voice_trip_days(db, trip.id) if trip is not None else []
+    token = mint_livekit_token(
+        identity=str(user.id),
+        name=user.name,
+        room=room,
+        metadata=trip_context_json(trip, days=days),
+    )
     return ZennyLivekitTokenResponse(
         url=settings.livekit_url.strip(),
         token=token,

@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     knowledge_dir: str = "knowledge"
     embedding_model: str = ""
     prompt_path: str = "prompts/system.md"
+    zentrip_api_url: str = ""
 
 
 settings = Settings()

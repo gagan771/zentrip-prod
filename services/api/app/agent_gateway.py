@@ -14,6 +14,7 @@ ranking philosophy (§47) is "start with rules, then learn," and an agent gatewa
 import asyncio
 import json
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -21,11 +22,13 @@ from datetime import date, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent_intent import classify_intent, is_backchannel
-from app.adaptive_planner import merge_profile, rank_candidates, select_diverse_recommendations
+from app.agent_intent import classify_intent, is_backchannel, parse_travel_slots
+from app.adaptive_planner import merge_profile, rank_candidates, rerank_candidates, select_diverse_recommendations
 from app.comparison_service import find_known_locations
 from app.knowledge_learning import record_knowledge_interaction
 from app.knowledge_service import search_published_claims
+from app.live_web import lookup_live_place_hours
+from app.trip_context import format_trip_context, load_voice_trip, load_voice_trip_days, spoken_today_plan
 from app.llm import LLMNotConfiguredError, LLMProviderError
 from app.phrasebook import _translation_reply
 from app.models import RiskPattern, TravelerProfile, Trip, TripMemoryNote, User, UserPreference
@@ -84,25 +87,17 @@ async def build_context(user: User, db: AsyncSession | None = None, trip_id: uui
         "country": user.country,
         "tripMemory": [],
         "preferences": [],
+        "preferenceMemory": [],
         "travelerProfile": {},
         "tripContext": None,
     }
     if db is None:
         return context
 
-    trip_query = select(Trip).where(Trip.user_id == user.id)
-    if trip_id is not None:
-        trip_query = trip_query.where(Trip.id == trip_id)
-    else:
-        trip_query = trip_query.order_by(Trip.created_at.desc()).limit(1)
-    trip = (await db.execute(trip_query)).scalar_one_or_none()
+    trip = await load_voice_trip(db, user.id, trip_id)
     if trip is not None:
-        context["tripContext"] = {
-            "cities": trip.cities,
-            "startDate": trip.start_date.isoformat(),
-            "endDate": trip.end_date.isoformat(),
-            "budgetLevel": trip.budget_level,
-        }
+        days = await load_voice_trip_days(db, trip.id)
+        context["tripContext"] = format_trip_context(trip, days=days)
         notes = (
             await db.execute(
                 select(TripMemoryNote)
@@ -120,7 +115,17 @@ async def build_context(user: User, db: AsyncSession | None = None, trip_id: uui
             .order_by(UserPreference.created_at.desc())
         )
     ).scalars().all()
-    context["preferences"] = [preference.statement for preference in preferences]
+    context["preferences"] = [preference.statement for preference in preferences if preference.confidence >= 0.5]
+    context["preferenceMemory"] = [
+        {
+            "statement": preference.statement,
+            "scope": preference.scope,
+            "confidence": preference.confidence,
+            "createdAt": preference.created_at.isoformat(),
+        }
+        for preference in preferences
+        if preference.confidence >= 0.5
+    ]
     traveler_profile = await db.scalar(select(TravelerProfile).where(TravelerProfile.user_id == user.id))
     context["travelerProfile"] = traveler_profile.preferences if traveler_profile else {}
     return context
@@ -132,7 +137,14 @@ async def _recommendation_reply(db: AsyncSession, text: str, context: dict | Non
 
     candidates = await _load_candidate_places(db, None)
     preference_statements = list((context or {}).get("preferences", []))
-    profile = merge_profile((context or {}).get("travelerProfile") or {}, [text, *preference_statements])
+    slots = parse_travel_slots(text)
+    profile_seed = dict((context or {}).get("travelerProfile") or {})
+    for key in ("transportPreferences", "foodPreferences", "accessibility"):
+        profile_seed[key] = list(dict.fromkeys([
+            *(profile_seed.get(key) or []),
+            *(slots.get("profile", {}).get(key) or []),
+        ]))
+    profile = merge_profile(profile_seed, [text, *preference_statements])
     lowered = text.casefold()
     budget = "luxury" if any(term in lowered for term in ("luxury", "premium", "splurge")) else "backpacker" if any(term in lowered for term in ("cheap", "budget", "backpack")) else "mixed"
     trip_days = None
@@ -151,11 +163,13 @@ async def _recommendation_reply(db: AsyncSession, text: str, context: dict | Non
         profile,
         {
             "budgetLevel": trip_context.get("budgetLevel") or budget,
-            "tripDays": trip_days or ((date.fromisoformat(trip_context["endDate"]) - date.fromisoformat(trip_context["startDate"])).days + 1 if trip_context.get("startDate") and trip_context.get("endDate") else None),
+            "tripDays": slots.get("constraints", {}).get("tripDays") or trip_days or ((date.fromisoformat(trip_context["endDate"]) - date.fromisoformat(trip_context["startDate"])).days + 1 if trip_context.get("startDate") and trip_context.get("endDate") else None),
             "travelMonth": travel_month,
+            **slots.get("constraints", {}),
             "avoid": ["crowded"] if "avoid crowd" in lowered else [],
         },
     )
+    ranked = rerank_candidates(ranked, text)
     selected = select_diverse_recommendations(ranked, limit=5)
     if not selected:
         return "I don't have enough reviewed destination data for that request yet. Try a theme such as heritage, beaches, wildlife, food, wellness, or mountains.", "estimated", []
@@ -237,6 +251,20 @@ async def _stay_reply(db: AsyncSession, user: User, city: str) -> tuple[str, str
     return reply, "estimated", []
 
 
+_CAB_KEYWORDS = (
+    "cab",
+    "taxi",
+    "uber",
+    "ola",
+    "rapido",
+    "auto rickshaw",
+    "namma yatri",
+    "namma-yatri",
+    "last mile",
+    "last-mile",
+)
+
+
 async def _compare_reply(db: AsyncSession, user: User, text: str) -> tuple[str, str, list[dict]]:
     # Local import: app.routers.compare doesn't import this module, but importing it
     # at module load time would run FastAPI router registration before app.main is
@@ -244,6 +272,14 @@ async def _compare_reply(db: AsyncSession, user: User, text: str) -> tuple[str, 
     from app.routers.compare import run_compare
 
     lowered = text.lower()
+    if any(keyword in lowered for keyword in _CAB_KEYWORDS):
+        return (
+            "I can open Uber, Ola, Rapido, or Namma Yatri with your pickup and drop. "
+            "Those apps show the live fare — I don't quote cab prices, and I won't book "
+            "a ride from a spoken yes. Open Compare and use Get there.",
+            "estimated",
+            [],
+        )
     codes = find_known_locations(text)
     wants_stay = any(keyword in lowered for keyword in _STAY_KEYWORDS)
 
@@ -441,8 +477,28 @@ def _emergency_reply() -> tuple[str, str, list[dict]]:
     )
 
 
-async def _guide_reply(db: AsyncSession, text: str, *, limit: int = 8) -> tuple[str, str, list[dict]]:
-    rows = await search_published_claims(db, query=text, limit=limit)
+async def _guide_reply(
+    db: AsyncSession, text: str, *, limit: int = 8, context: dict | None = None
+) -> tuple[str, str, list[dict]]:
+    lowered = text.casefold()
+    if any(term in lowered for term in ("open", "closed", "opening", "hours", "timing", "currently", "today")):
+        live = await lookup_live_place_hours(text)
+        if live:
+            return (
+                f"I checked the official {live['place']} page just now. {live['excerpt']} "
+                "Hours can change for holidays or special closures, so use the linked official page before leaving.",
+                "live",
+                [{
+                    "sourceName": f"Official {live['place']} visitor page (live check)",
+                    "sourceUrl": live["sourceUrl"],
+                    "sourceLocator": f"Fetched at {live['fetchedAt']}",
+                    "lastVerified": date.today(),
+                    "confidence": "live",
+                }],
+            )
+    trip = (context or {}).get("tripContext") or {}
+    city = str(trip.get("focusCity") or "").strip() or None
+    rows = await search_published_claims(db, query=text, city=city, limit=limit)
     if not rows:
         return (
             "I don't have a reviewed source for that yet. Ask about a major Indian monument, city, "
@@ -466,6 +522,27 @@ async def _guide_reply(db: AsyncSession, text: str, *, limit: int = 8) -> tuple[
             }
         )
     return " ".join(spoken_facts), "verified", citations
+
+
+async def _app_help_reply(db: AsyncSession, text: str) -> tuple[str, str, list[dict]]:
+    """Answer product-capability questions from the internal feature catalog."""
+    rows = await search_published_claims(db, query=text, city="Zentrip", limit=5)
+    if not rows:
+        rows = await search_published_claims(db, query="Zentrip app features booking", city="Zentrip", limit=5)
+    if not rows:
+        return "I can open provider handoffs, but I don't have a reviewed description of that feature yet.", "estimated", []
+    claims = []
+    citations = []
+    for claim, entity, source in rows:
+        claims.append(claim.claim)
+        citations.append({
+            "sourceName": source.name,
+            "sourceUrl": source.source_url,
+            "sourceLocator": claim.source_locator,
+            "lastVerified": claim.last_verified,
+            "confidence": claim.confidence,
+        })
+    return " ".join(dict.fromkeys(claims)), "verified", citations
 
 
 async def _risk_reply(db: AsyncSession, text: str) -> tuple[str, str, list[dict]] | None:
@@ -551,6 +628,7 @@ async def handle_message(
     voice: bool = False,
     trip_id: uuid.UUID | None = None,
 ) -> AgentReply:
+    started_at = time.perf_counter()
     intent = classify_intent(text)
     policy_tier = tag_policy(intent)
     # Voice turns need the same profile, trip memory, and durable preferences as
@@ -567,10 +645,14 @@ async def handle_message(
     # Same for "safety" (15/16): Guardian/emergency/scam content rides this pipeline too,
     # with one addition below — an emergency-keyword fast path that answers first with the
     # 112 number regardless of what else the KB search returns.
-    if intent == "recommendation" and db is not None:
+    if intent == "app_help" and db is not None:
+        reply_text, confidence, citations = await _app_help_reply(db, text)
+    elif intent == "recommendation" and db is not None:
         reply_text, confidence, citations = await _recommendation_reply(db, text, context)
     elif intent in ("guide", "payment", "safety") and db is not None:
-        reply_text, confidence, citations = await _guide_reply(db, text, limit=3 if voice else 8)
+        reply_text, confidence, citations = await _guide_reply(
+            db, text, limit=3 if voice else 8, context=context
+        )
         if intent == "safety" and not _is_emergency(text):
             risk_result = await _risk_reply(db, text)
             if risk_result:
@@ -588,8 +670,7 @@ async def handle_message(
     elif intent == "trip_planning" and db is not None:
         if voice:
             reply_text, confidence, citations = (
-                "Open the Trip tab for a full itinerary. Ask me a short question about a monument, "
-                "route, season, or food street and I'll answer from sourced records.",
+                spoken_today_plan(context.get("tripContext")),
                 "estimated",
                 [],
             )
@@ -626,6 +707,12 @@ async def handle_message(
                 citation_count=len(citations),
                 confidence=confidence,
                 session_id=session_id,
+                telemetry={
+                    "voice": voice,
+                    "intent": intent,
+                    "latencyMs": int((time.perf_counter() - started_at) * 1000),
+                    "citationCount": len(citations),
+                },
             )
             await db.commit()
             interaction_id = interaction.id

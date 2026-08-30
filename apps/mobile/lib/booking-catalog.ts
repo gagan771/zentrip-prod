@@ -24,6 +24,8 @@ export const BOOKING_BRANDS: BookingBrand[] = [
   { key: 'uber', displayName: 'Uber', shortName: 'Uber', category: 'cab', domain: 'uber.com', initials: 'U', color: '#000000', homeUrl: 'https://m.uber.com/' },
   { key: 'ola', displayName: 'Ola', shortName: 'Ola', category: 'cab', domain: 'olacabs.com', initials: 'O', color: '#1A1A1A', homeUrl: 'https://book.olacabs.com/' },
   { key: 'rapido', displayName: 'Rapido', shortName: 'Rapido', category: 'cab', domain: 'rapido.bike', initials: 'R', color: '#F5C518', homeUrl: 'https://www.rapido.bike/' },
+  { key: 'namma_yatri', displayName: 'Namma Yatri', shortName: 'Namma', category: 'cab', domain: 'nammayatri.in', initials: 'NY', color: '#2E7D32', homeUrl: 'https://nammayatri.in/' },
+  { key: 'google_maps', displayName: 'Google Maps', shortName: 'Maps', category: 'cab', domain: 'google.com', initials: 'G', color: '#4285F4', homeUrl: 'https://www.google.com/maps' },
 
   { key: 'makemytrip_hotels', displayName: 'MakeMyTrip Hotels', shortName: 'MMT', category: 'stay', domain: 'makemytrip.com', initials: 'M', color: '#EB2026', homeUrl: 'https://www.makemytrip.com/hotels/' },
   { key: 'goibibo_hotels', displayName: 'Goibibo Hotels', shortName: 'Goibibo', category: 'stay', domain: 'goibibo.com', initials: 'G', color: '#F15A22', homeUrl: 'https://www.goibibo.com/hotels/' },
@@ -77,7 +79,7 @@ export const BOOKING_SECTIONS: Array<{
   icon: string;
   categories: BookingCategory[];
 }> = [
-  { id: 'cab', title: 'Cabs', subtitle: 'Uber, Ola, Rapido', icon: 'car-outline', categories: ['cab'] },
+  { id: 'cab', title: 'Cabs', subtitle: 'Uber, Ola, Rapido, Namma Yatri', icon: 'car-outline', categories: ['cab'] },
   { id: 'stay', title: 'Hotels', subtitle: 'MMT, Goibibo, Booking, Agoda, Airbnb', icon: 'bed-outline', categories: ['stay'] },
   { id: 'flight', title: 'Flights', subtitle: 'Air India, IndiGo, SpiceJet, OTAs', icon: 'airplane-outline', categories: ['flight'] },
   { id: 'other', title: 'Trains & buses', subtitle: 'IRCTC, RedBus, AbhiBus and more', icon: 'train-outline', categories: ['train', 'bus'] },

@@ -4,7 +4,8 @@ from unittest.mock import patch
 
 from app.comparison_service import SearchInput, StaySearchInput, search_adapters, search_stay_adapters
 from app.config import settings
-from app.provider_handoff import resolve_city, stay_handoffs, transport_handoffs
+from app.cab_service import CabSearchInput, search_cabs
+from app.provider_handoff import cab_handoffs, resolve_city, stay_handoffs, transport_handoffs
 from app.translation_service import LiveTranslationNotConfiguredError, translate_with_fallback
 
 
@@ -42,6 +43,26 @@ class ProviderHandoffTests(unittest.TestCase):
         self.assertEqual(city.bus_slug, "pushkar")
         items = transport_handoffs("Pushkar", "Jaipur", date(2026, 11, 1))
         self.assertTrue(items)
+
+    def test_cab_handoff_includes_coords_and_namma_yatri(self) -> None:
+        items = cab_handoffs("Connaught Place", "Taj Mahal", 28.6315, 77.2167, 27.1751, 78.0421)
+        keys = {item.key for item in items}
+        self.assertIn("uber", keys)
+        self.assertIn("namma_yatri", keys)
+        uber = next(item for item in items if item.key == "uber")
+        self.assertIn("28.6315", uber.url)
+        self.assertIn("77.2167", uber.url)
+        self.assertIn("27.1751", uber.url)
+        self.assertNotIn("₹", uber.note)
+
+    def test_cab_search_never_claims_live_fare(self) -> None:
+        payload = search_cabs(CabSearchInput(pickup="Delhi", drop="Agra"))
+        self.assertFalse(payload["isLive"])
+        self.assertTrue(payload["options"])
+        for option in payload["options"]:
+            self.assertIsNone(option["fareInr"])
+            self.assertEqual(option["provenance"], "handoff")
+        self.assertIn("developers.olacabs.com", payload["partners"][0]["applyUrl"])
 
 
 class TranslationFallbackTests(unittest.TestCase):

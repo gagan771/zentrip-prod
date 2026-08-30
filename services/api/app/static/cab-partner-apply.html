@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Zentrip · apply for last-mile partnership</title>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: linear-gradient(#e8f3dc, #cfe6b8 45%, #9ec27a);
+      color: #1c2a16;
+    }
+    main { max-width: 40rem; margin: 0 auto; padding: 2.4rem 1.25rem 4rem; }
+    h1 { font-size: 1.55rem; font-weight: 700; margin: 0 0 0.4rem; }
+    h2 { font-size: 1.05rem; margin: 1.6rem 0 0.5rem; }
+    p.lead { margin: 0 0 1.1rem; opacity: 0.82; line-height: 1.45; }
+    .card {
+      background: #f7fbee;
+      border: 1px solid #8aaa6c;
+      border-radius: 0.9rem;
+      padding: 1rem 1.1rem;
+      margin: 0.7rem 0;
+    }
+    .card h3 { margin: 0 0 0.25rem; font-size: 1rem; }
+    .meta { font-size: 0.78rem; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.7; }
+    a.btn {
+      display: inline-block;
+      margin-top: 0.65rem;
+      background: #1c2a16;
+      color: #f7fbee;
+      text-decoration: none;
+      border-radius: 999px;
+      padding: 0.55rem 0.95rem;
+      font-weight: 650;
+      font-size: 0.9rem;
+    }
+    a.ghost { background: transparent; color: #1c2a16; border: 1px solid #1c2a16; margin-left: 0.4rem; }
+    pre {
+      white-space: pre-wrap;
+      background: #1c2a16;
+      color: #e8f3dc;
+      border-radius: 0.75rem;
+      padding: 1rem;
+      font-size: 0.86rem;
+      line-height: 1.45;
+    }
+    button.copy {
+      border: 0;
+      border-radius: 999px;
+      padding: 0.55rem 0.95rem;
+      font-weight: 650;
+      background: #3d5a2a;
+      color: #f7fbee;
+      cursor: pointer;
+    }
+    .ok { font-size: 0.85rem; margin-left: 0.5rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="meta">Zentrip · Zenny last-mile</p>
+    <h1>Apply for a cab partnership</h1>
+    <p class="lead">
+      Travelers can already open Uber, Ola, Rapido, and Namma Yatri with pickup and drop
+      filled in. Live quotes and in-app booking need an official partner API — we do not
+      scrape, we do not store rider passwords, and we do not take payment.
+    </p>
+
+    <h2>What to send</h2>
+    <pre id="brief">Company: Zentrip (Zenny)
+Product: India travel companion for first-time and independent travelers
+Ask: last-mile rider quotes + official deep-link / book API, later trip tracking
+Not asking for: scraping access, shadow login, or taking payment on our rails
+Use case: traveler taps Get there on a trip day → compares authorized offers → completes checkout on the partner app
+Markets: India (Golden Triangle first, then pan-India cities)
+Current state: official-app handoff with coordinates; no live ₹ shown as ours
+Contact role: founder / partnerships
+</pre>
+    <p>
+      <button class="copy" type="button" id="copy">Copy application brief</button>
+      <span class="ok" id="copied" hidden>Copied</span>
+    </p>
+
+    <h2>Official apply links</h2>
+    <div class="card">
+      <p class="meta">Most realistic first live quotes</p>
+      <h3>Namma Yatri · Beckn / ONDC mobility</h3>
+      <p>Open-mobility network. Start here if you want authorized quotes without a closed commercial deal.</p>
+      <a class="btn" href="https://nammayatri.in/" target="_blank" rel="noopener">Namma Yatri</a>
+      <a class="btn ghost" href="https://becknprotocol.io/" target="_blank" rel="noopener">Beckn</a>
+      <a class="btn ghost" href="https://ondc.org/" target="_blank" rel="noopener">ONDC</a>
+    </div>
+    <div class="card">
+      <p class="meta">Commercial partner API</p>
+      <h3>Ola Developers</h3>
+      <p>Apply for the official developer program. Best second live source after open mobility.</p>
+      <a class="btn" href="https://developers.olacabs.com/" target="_blank" rel="noopener">Apply at Ola Developers</a>
+    </div>
+    <div class="card">
+      <p class="meta">Deep links today · Ride Request API last</p>
+      <h3>Uber Developers</h3>
+      <p>Prefill already works. Live Ride Request access is invite-only — apply after Ola / Namma Yatri.</p>
+      <a class="btn" href="https://developer.uber.com/" target="_blank" rel="noopener">Apply at Uber Developers</a>
+      <a class="btn ghost" href="https://developer.uber.com/docs/riders/ride-requests/tutorials/deep-links/introduction" target="_blank" rel="noopener">Deep-link docs</a>
+    </div>
+    <div class="card">
+      <p class="meta">Handoff only</p>
+      <h3>Rapido</h3>
+      <p>No public partner API. Keep official-app handoff until they publish one.</p>
+      <a class="btn" href="https://www.rapido.bike/" target="_blank" rel="noopener">Rapido site</a>
+    </div>
+
+    <h2>How Zentrip will use access</h2>
+    <p class="lead">
+      A signed key drops into the existing <code>CabAdapter</code>. Quotes stay labelled live
+      only when the partner returns them. Zenny will never book from a spoken “yes” —
+      the traveler confirms in the partner app.
+    </p>
+  </main>
+  <script>
+    document.getElementById("copy").addEventListener("click", async () => {
+      const text = document.getElementById("brief").innerText;
+      try {
+        await navigator.clipboard.writeText(text);
+        document.getElementById("copied").hidden = false;
+      } catch (err) {
+        document.getElementById("copied").hidden = false;
+        document.getElementById("copied").textContent = "Select the brief and copy it";
+      }
+    });
+  </script>
+</body>
+</html>

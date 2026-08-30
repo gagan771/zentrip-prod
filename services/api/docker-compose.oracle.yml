@@ -1,0 +1,73 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: zentrip
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: zentrip
+    volumes:
+      - zentrip_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zentrip -d zentrip"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - zentrip_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      # Container-to-container addresses must not be localhost.
+      DATABASE_URL: postgresql+asyncpg://zentrip:${POSTGRES_PASSWORD}@postgres:5432/zentrip
+      REDIS_URL: redis://redis:6379/0
+      RATE_LIMIT_STORAGE_URI: redis://redis:6379/1
+      PUBLIC_BASE_URL: https://${DOMAIN:?set DOMAIN in .env}
+      CORS_ORIGINS: https://${DOMAIN}
+      APP_ENV: ${APP_ENV:-staging}
+      ALLOW_DEMO_PROVIDER_DATA: ${ALLOW_DEMO_PROVIDER_DATA:-false}
+    expose:
+      - "8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["sh", "-c", "alembic upgrade head && python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8001"]
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/oracle/Caddyfile:/etc/caddy/Caddyfile:ro
+      - zentrip_caddy_data:/data
+      - zentrip_caddy_config:/config
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  zentrip_postgres_data:
+  zentrip_redis_data:
+  zentrip_caddy_data:
+  zentrip_caddy_config:

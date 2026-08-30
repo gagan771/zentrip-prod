@@ -313,6 +313,7 @@ class KnowledgeObservation(Base):
     source_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     observed_at: Mapped[date] = mapped_column(Date, nullable=False)
     refresh_after: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(20), default="needs_review", nullable=False)
     reviewer_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     reviewer_note: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -416,6 +417,7 @@ class KnowledgeInteraction(Base):
     citation_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     answer_confidence: Mapped[str] = mapped_column(String(20), nullable=False)
     outcome: Mapped[str] = mapped_column(String(30), nullable=False, index=True)  # answered|no_match|low_confidence
+    telemetry: Mapped[dict] = mapped_column(_JSON, nullable=False, default=dict)
     feedback: Mapped[str | None] = mapped_column(String(20), nullable=True)  # helpful|not_helpful
     feedback_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     feedback_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -552,6 +554,10 @@ class UserPreference(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     statement: Mapped[str] = mapped_column(String(500), nullable=False)
+    # Scope separates durable preferences from a single-trip instruction. The
+    # confidence score lets the planner discount weakly supported memories.
+    scope: Mapped[str] = mapped_column(String(20), default="long_term", nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 

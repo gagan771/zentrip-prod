@@ -165,6 +165,30 @@ class CoachDemoAdapter(_CorridorDemoAdapter):
     departure_time = time(8, 0)
 
 
+class CabHandoffAdapter:
+    """ServiceProviderAdapter stub for last-mile cabs.
+
+    search() is empty on purpose: cab prices must not be persisted as mock
+    observations. Live quotes belong on CabAdapter in app.cab_service once a
+    Namma Yatri / Ola key is wired.
+    """
+
+    provider = "cab_handoff"
+    mode = "cab"
+
+    def search(self, search_input: SearchInput) -> list[ProviderSearchResult]:
+        del search_input
+        return []
+
+    def get_details(self, external_id: str) -> ProviderSearchResult | None:
+        del external_id
+        return None
+
+    def get_deep_link(self, external_id: str) -> str | None:
+        del external_id
+        return None
+
+
 ADAPTERS: tuple[ServiceProviderAdapter, ...] = (RailDemoAdapter(), CoachDemoAdapter())
 
 

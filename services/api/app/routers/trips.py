@@ -1,14 +1,14 @@
-import asyncio
 import uuid
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.adaptive_planner import city_variants
 from app.deps import get_current_user
-from app.llm import LLMNotConfiguredError, LLMProviderError, generate_itinerary_days, provider_configuration_error
+from app.llm import LLMNotConfiguredError, LLMProviderError, provider_configuration_error
 from app.knowledge_ops import merge_operational_profile
 from app.models import DestinationProfile, ItineraryDay, KnowledgeAlias, KnowledgeClaim, KnowledgeEntity, KnowledgeObservation, KnowledgeSource, Trip, TripBooking, User
 from app.schemas import (
@@ -20,6 +20,7 @@ from app.schemas import (
     TripCreate,
     TripOut,
     TripTimelineResponse,
+    AdaptivePlanCreate,
 )
 
 router = APIRouter(prefix="/v1/trips", tags=["trips"])
@@ -87,12 +88,14 @@ async def _load_candidate_places(db: AsyncSession, cities: list[str] | None) -> 
                 ]
             ),
             KnowledgeClaim.verification_status == "published",
+            KnowledgeClaim.confidence.in_(["verified", "estimated"]),
             KnowledgeSource.status == "active",
         )
         .order_by(KnowledgeClaim.last_verified.desc())
     )
     if cities:
-        statement = statement.where(KnowledgeEntity.city.in_(cities))
+        variants = {variant for city in cities for variant in city_variants(city)}
+        statement = statement.where(func.lower(KnowledgeEntity.city).in_(variants))
     rows = (await db.execute(statement)).all()
     entity_ids = list({entity.id for entity, _, _ in rows})
     observations_by_entity: dict[uuid.UUID, list[KnowledgeObservation]] = {}
@@ -268,28 +271,21 @@ async def regenerate_itinerary(db: AsyncSession, trip: Trip) -> tuple[list[Itine
     LLMNotConfiguredError / LLMProviderError from app.llm — callers decide how to
     surface those (HTTP error vs. a spoken fallback reply).
     """
+    # Keep the legacy REST endpoint and the agent gateway on the same adaptive
+    # planner path. Previously this endpoint called the raw LLM directly, which
+    # bypassed profile memory, route validation, repair, fallback, and PlannerRun
+    # traceability.
+    from app.routers.planner import _create_adaptive_plan
+
+    user = await db.scalar(select(User).where(User.id == trip.user_id))
+    if user is None:
+        raise LLMProviderError("Trip owner could not be loaded for grounded planning")
+    await _create_adaptive_plan(db, trip, user, AdaptivePlanCreate())
     candidates = await _load_candidate_places(db, trip.cities)
-    days_raw = await asyncio.to_thread(generate_itinerary_days, trip, candidates)
-
-    # Regenerate: replace whatever itinerary existed before.
-    await db.execute(delete(ItineraryDay).where(ItineraryDay.trip_id == trip.id))
-
-    new_days: list[ItineraryDay] = []
-    for raw_day in days_raw:
-        day_date = trip.start_date + timedelta(days=raw_day["day"] - 1)
-        row = ItineraryDay(
-            trip_id=trip.id,
-            day=raw_day["day"],
-            date=day_date,
-            city=raw_day["city"],
-            activities=raw_day["activities"],
-        )
-        db.add(row)
-        new_days.append(row)
-
-    trip.status = "planned"
-    await db.commit()
-    return new_days, candidates
+    new_days = (
+        await db.execute(select(ItineraryDay).where(ItineraryDay.trip_id == trip.id).order_by(ItineraryDay.day))
+    ).scalars().all()
+    return list(new_days), candidates
 
 
 @router.post("/{trip_id}/generate-itinerary", response_model=GenerateItineraryResponse)

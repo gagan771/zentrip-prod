@@ -191,6 +191,7 @@ async def first_time_essentials(
             KnowledgeEntity.entity_type == _ESSENTIAL_TOPICS[topic],
             KnowledgeEntity.status == "published",
             KnowledgeClaim.verification_status == "published",
+            KnowledgeClaim.confidence.in_(["verified", "estimated"]),
             KnowledgeSource.status == "active",
         )
         .order_by(desc(KnowledgeClaim.last_verified), KnowledgeEntity.name)
@@ -260,6 +261,7 @@ async def operational_knowledge(
             value=observation.value,
             observedAt=observation.observed_at,
             refreshAfter=observation.refresh_after,
+            fingerprint=observation.fingerprint,
             status=observation.status,
             reviewerId=observation.reviewer_id,
             reviewerNote=observation.reviewer_note,

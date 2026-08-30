@@ -63,8 +63,37 @@ export async function getVoiceSessionId(): Promise<string> {
   return created;
 }
 
+export type ZennyVoiceContext = {
+  hasTrip: boolean;
+  cities?: string[];
+  focusKind?: string | null;
+  focusCity?: string | null;
+  focusDate?: string | null;
+  focusStops?: string[];
+  livekitReady?: boolean;
+};
+
 export async function getZennyVoiceStatus(): Promise<ZennyVoiceStatus> {
   return apiRequest<ZennyVoiceStatus>('/v1/zenny/voice/status');
+}
+
+export async function getZennyVoiceContext(): Promise<ZennyVoiceContext> {
+  return apiRequest<ZennyVoiceContext>('/v1/zenny/voice/context');
+}
+
+export function formatVoiceTripLine(ctx: ZennyVoiceContext | null): string {
+  if (!ctx?.hasTrip) return 'No saved trip yet — Zenny will not invent one.';
+  const stops = (ctx.focusStops || []).filter(Boolean).join(', ');
+  if (ctx.focusKind === 'today' && ctx.focusCity) {
+    return stops
+      ? `Today in ${ctx.focusCity}: ${stops}. Ask her about those.`
+      : `Today you are in ${ctx.focusCity}.`;
+  }
+  if (ctx.focusKind === 'upcoming' && ctx.focusCity) {
+    return `Next planned day is ${ctx.focusCity}${ctx.focusDate ? ` on ${ctx.focusDate}` : ''}.`;
+  }
+  const cities = (ctx.cities || []).filter(Boolean).join(', ');
+  return cities ? `Your trip: ${cities}.` : 'You have a saved trip.';
 }
 
 export async function sendZennyVoiceTurn(uri: string, tripId?: string | null): Promise<ZennyVoiceTurn> {
@@ -94,10 +123,13 @@ export async function createZennyLiveSession(
   });
 }
 
-export async function createZennyLivekitToken(sessionId?: string): Promise<ZennyLivekitToken> {
+export async function createZennyLivekitToken(
+  sessionId?: string,
+  tripId?: string | null,
+): Promise<ZennyLivekitToken> {
   return apiRequest<ZennyLivekitToken>('/v1/zenny/voice/token', {
     method: 'POST',
-    body: { sessionId: sessionId || undefined },
+    body: { sessionId: sessionId || undefined, tripId: tripId || undefined },
   });
 }
 

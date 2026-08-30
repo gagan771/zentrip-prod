@@ -51,6 +51,7 @@ from app.india_tourism_catalog import (
     SOURCES as INDIA_TOURISM_SOURCES,
 )
 from app.first_time_india_catalog import ENTRIES as FIRST_TIME_INDIA_ENTRIES, SOURCES as FIRST_TIME_INDIA_SOURCES
+from app.product_capabilities import ENTRIES as PRODUCT_CAPABILITY_ENTRIES, SOURCES as PRODUCT_CAPABILITY_SOURCES
 from app.india_regional_expansion import (
     ENTRIES as REGIONAL_INDIA_ENTRIES,
     PROFILES as REGIONAL_INDIA_PROFILES,
@@ -669,6 +670,14 @@ async def main() -> None:
 
         for name, city, aliases, source_key, claim_text, confidence in SAFETY_ENTRIES:
             ce, cc = await _upsert_entry(db, SAFETY_SOURCES, "safety_info", name, city, aliases, source_key, claim_text, confidence)
+            created_entities += ce
+            created_claims += cc
+
+        for name, city, aliases, source_key, claim_text, confidence in PRODUCT_CAPABILITY_ENTRIES:
+            ce, cc = await _upsert_entry(
+                db, PRODUCT_CAPABILITY_SOURCES, "app_feature", name, city, aliases, source_key,
+                claim_text, confidence,
+            )
             created_entities += ce
             created_claims += cc
 

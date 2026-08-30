@@ -17,7 +17,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from app.adaptive_planner import rank_candidates
+from app.adaptive_planner import rank_candidates, rerank_candidates
 from app.india_regional_expansion import ENTRIES as REGIONAL_ENTRIES
 from app.india_regional_expansion import PROFILES as REGIONAL_PROFILES
 from app.india_tourism_catalog import ENTRIES as TOURISM_ENTRIES
@@ -79,6 +79,34 @@ def _load_cases(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+_QUERY_VARIANTS = (
+    "{query}",
+    "please suggest {query}",
+    "{query} for my family",
+    "{query} for a relaxed trip",
+    "{query}, budget friendly",
+    "{query} in Hindi",
+    "Hinglish: {query}",
+    "I want {query}",
+    "{query} with less walking",
+    "{query} without unsafe or invented details",
+)
+
+
+def _expanded_cases(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Turn curated templates into a 200-case multilingual/adversarial smoke set."""
+    expanded: list[dict[str, Any]] = []
+    for case in cases:
+        for index, variant in enumerate(_QUERY_VARIANTS, start=1):
+            expanded.append({
+                **case,
+                "id": f"{case['id']}:v{index}",
+                "query": variant.format(query=case.get("query", "")),
+                "baseCaseId": case["id"],
+            })
+    return expanded
+
+
 def _tags(candidate: dict[str, Any]) -> set[str]:
     experience = candidate.get("experienceProfile") or {}
     destination = experience.get("destinationProfile") or {}
@@ -99,6 +127,7 @@ def _relevant(candidate: dict[str, Any], case: dict[str, Any]) -> bool:
 
 
 def evaluate(cases: list[dict[str, Any]], candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    cases = _expanded_cases(cases)
     case_reports: list[dict[str, Any]] = []
     tag_precision: list[float] = []
     coverage: list[float] = []
@@ -112,7 +141,7 @@ def evaluate(cases: list[dict[str, Any]], candidates: list[dict[str, Any]]) -> d
         profile = case.get("profile") or {}
         constraints = case.get("constraints") or {}
         limit = int(case.get("limit", 5))
-        ranked = rank_candidates(candidates, profile, constraints)[:limit]
+        ranked = rerank_candidates(rank_candidates(candidates, profile, constraints), case.get("query", ""), limit=limit)
         relevant = [_relevant(item, case) for item in ranked]
         forbidden = {str(value).casefold() for value in case.get("avoidTags", [])}
         safe = [not (forbidden & _tags(item)) for item in ranked]

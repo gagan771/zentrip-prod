@@ -13,12 +13,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from pathlib import Path
 
 from sqlalchemy import desc, select
 
 from app.db import AsyncSessionLocal
 from app.knowledge_learning import knowledge_improvement_report
 from app.models import KnowledgeGap, KnowledgeInteraction
+from scripts.evaluate_planner import evaluate as evaluate_planner
+from scripts.evaluate_recommendations import _candidate_rows, _load_cases, evaluate as evaluate_recommendations
 
 
 async def run_once() -> dict:
@@ -27,7 +30,15 @@ async def run_once() -> dict:
             await db.scalars(select(KnowledgeInteraction).order_by(desc(KnowledgeInteraction.created_at)).limit(5000))
         ).all()
         gaps = (await db.scalars(select(KnowledgeGap).limit(1000))).all()
-    return knowledge_improvement_report(interactions, gaps)
+    report = knowledge_improvement_report(interactions, gaps)
+    # Keep the operational gap queue and offline quality gates in one report so
+    # editorial work can be prioritized against measurable regressions.
+    recommendation_metrics = evaluate_recommendations(
+        _load_cases(Path(__file__).resolve().parents[1] / "evals" / "recommendation_cases.jsonl"),
+        _candidate_rows(),
+    )["metrics"]
+    planner_metrics = evaluate_planner()["metrics"]
+    return {**report, "recommendationQuality": recommendation_metrics, "plannerQuality": planner_metrics}
 
 
 async def run(*, watch: bool, interval_seconds: int) -> None:

@@ -49,13 +49,13 @@ def normalize_query(text: str) -> str:
 def _gap_required(*, intent: str, result_count: int, citation_count: int, confidence: str) -> bool:
     # Chat/tool requests are not KB gaps just because they have no citations.
     # Guide-like intents are expected to be grounded in reviewed records.
-    return intent in {"guide", "payment", "safety"} and (
+    return intent in {"guide", "payment", "safety", "recommendation"} and (
         result_count == 0 or citation_count == 0 or confidence != "verified"
     )
 
 
 def _outcome(*, intent: str, result_count: int, citation_count: int, confidence: str) -> str:
-    if intent not in {"guide", "payment", "safety"}:
+    if intent not in {"guide", "payment", "safety", "recommendation"}:
         return "answered"
     if result_count == 0:
         return "no_match"
@@ -123,6 +123,7 @@ async def record_knowledge_interaction(
     citation_count: int,
     confidence: str,
     session_id: str | None = None,
+    telemetry: dict | None = None,
 ) -> KnowledgeInteraction:
     """Persist one answer-quality event and create/update a gap when warranted."""
     safe_query = sanitize_query(query)
@@ -136,6 +137,7 @@ async def record_knowledge_interaction(
         result_count=max(0, result_count),
         citation_count=max(0, citation_count),
         answer_confidence=confidence,
+        telemetry=telemetry or {},
         outcome=_outcome(
             intent=intent,
             result_count=result_count,
@@ -202,6 +204,24 @@ def knowledge_improvement_report(
         key=lambda gap: (gap.priority, gap.occurrence_count, gap.last_seen_at),
         reverse=True,
     )[:20]
+    by_intent: dict[str, dict[str, int]] = {}
+    latency_values: list[int] = []
+    voice_turns = 0
+    for row in interactions:
+        intent = str(getattr(row, "intent", "unknown"))
+        bucket = by_intent.setdefault(intent, {"total": 0, "noMatch": 0, "lowConfidence": 0, "notHelpful": 0})
+        bucket["total"] += 1
+        bucket["noMatch"] += int(getattr(row, "outcome", "") == "no_match")
+        bucket["lowConfidence"] += int(getattr(row, "outcome", "") == "low_confidence")
+        bucket["notHelpful"] += int(getattr(row, "feedback", None) == "not_helpful")
+        telemetry = getattr(row, "telemetry", {}) or {}
+        if isinstance(telemetry, dict):
+            if telemetry.get("voice"):
+                voice_turns += 1
+            try:
+                latency_values.append(max(0, int(telemetry.get("latencyMs", 0))))
+            except (TypeError, ValueError):
+                pass
     return {
         "totalInteractions": len(interactions),
         "noMatch": sum(row.outcome == "no_match" for row in interactions),
@@ -209,6 +229,12 @@ def knowledge_improvement_report(
         "negativeFeedback": sum(row.feedback == "not_helpful" for row in interactions),
         "openGaps": len(open_gaps),
         "resolvedGaps": sum(row.status == "resolved" for row in gaps),
+        "byIntent": by_intent,
+        "qualityTelemetry": {
+            "voiceTurns": voice_turns,
+            "averageLatencyMs": round(sum(latency_values) / len(latency_values), 1) if latency_values else None,
+            "measuredTurns": len(latency_values),
+        },
         "topGaps": [
             {
                 "id": str(gap.id),

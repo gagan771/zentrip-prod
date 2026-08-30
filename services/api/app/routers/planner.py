@@ -6,10 +6,15 @@ from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete, func, select
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adaptive_planner import (
     DEFAULT_PROFILE,
+    allocate_city_days,
+    build_route_skeleton,
+    canonical_city,
+    cities_match,
     fallback_days,
     merge_profile,
     rank_candidates,
@@ -18,12 +23,15 @@ from app.adaptive_planner import (
 from app.config import settings
 from app.db import get_db
 from app.deps import get_current_staff, get_current_user
-from app.llm import LLMProviderError, generate_itinerary_days
+from app.llm import LLMNotConfiguredError, LLMProviderError, generate_itinerary_days
 from app.models import (
     EditorialRule,
+    DestinationRoute,
     ItineraryDay,
     ItineraryFeedback,
     ItineraryPlan,
+    KnowledgeEntity,
+    KnowledgeSource,
     PlannerRun,
     TravelerProfile,
     Trip,
@@ -41,6 +49,7 @@ from app.schemas import (
     ItineraryFeedbackOut,
     ItineraryPlanOut,
     PlanStaffDecision,
+    TripConstraintsInput,
     TravelerProfileInput,
     TravelerProfileOut,
 )
@@ -50,6 +59,48 @@ router = APIRouter(prefix="/v1", tags=["adaptive-planner"])
 
 def _profile_out(profile: dict, updated_at: datetime) -> TravelerProfileOut:
     return TravelerProfileOut(**{**DEFAULT_PROFILE, **profile, "updatedAt": updated_at})
+
+
+async def _route_context(db: AsyncSession, cities: list[str]) -> dict[str, dict]:
+    """Load reviewed inter-city route ranges for the requested consecutive stops."""
+    if len(cities) < 2:
+        return {}
+    origin_entity = aliased(KnowledgeEntity)
+    destination_entity = aliased(KnowledgeEntity)
+    rows = (
+        await db.execute(
+            select(DestinationRoute, origin_entity, destination_entity)
+            .join(origin_entity, DestinationRoute.origin_entity_id == origin_entity.id)
+            .join(destination_entity, DestinationRoute.destination_entity_id == destination_entity.id)
+            .join(KnowledgeSource, DestinationRoute.source_id == KnowledgeSource.id)
+            .where(
+                DestinationRoute.status == "published",
+                origin_entity.status == "published",
+                destination_entity.status == "published",
+                KnowledgeSource.status == "active",
+            )
+        )
+    ).all()
+    context: dict[str, dict] = {}
+    for index in range(len(cities) - 1):
+        origin = cities[index]
+        destination = cities[index + 1]
+        for route, origin_row, destination_row in rows:
+            origin_matches = cities_match(origin_row.city, origin) or cities_match(origin_row.name, origin)
+            destination_matches = cities_match(destination_row.city, destination) or cities_match(destination_row.name, destination)
+            if origin_matches and destination_matches:
+                context[f"{canonical_city(origin)}>{canonical_city(destination)}"] = {
+                    "mode": route.mode,
+                    "distanceKm": route.distance_km,
+                    "typicalMinMinutes": route.typical_min_minutes,
+                    "typicalMaxMinutes": route.typical_max_minutes,
+                    "seasonNotes": route.season_notes,
+                    "observedAt": route.observed_at.isoformat(),
+                    "refreshAfter": route.refresh_after.isoformat(),
+                    "stale": route.refresh_after < date.today(),
+                }
+                break
+    return context
 
 
 def _plan_out(plan: ItineraryPlan) -> ItineraryPlanOut:
@@ -123,15 +174,16 @@ async def _planner_context(
         **(stored_profile.preferences if stored_profile else {}),
         **(body.profile.model_dump() if body.profile is not None else {}),
     }
-    statements = (
+    preference_rows = (
         await db.scalars(
-            select(UserPreference.statement)
+            select(UserPreference)
             .where(UserPreference.user_id == user.id, UserPreference.superseded_at.is_(None))
             .order_by(UserPreference.created_at.desc())
             .limit(50)
         )
     ).all()
-    profile = merge_profile(preferences, list(statements))
+    statements = [row.statement for row in preference_rows if row.confidence >= 0.5]
+    profile = merge_profile(preferences, statements)
     constraints = body.constraints.model_dump()
     constraints["budgetLevel"] = trip.budget_level
     constraints["wakeTime"] = profile.get("wakeTime", "08:00")
@@ -139,6 +191,8 @@ async def _planner_context(
     constraints["tripDays"] = (trip.end_date - trip.start_date).days + 1
     constraints["travelMonth"] = trip.start_date.month
     constraints["originCountry"] = trip.origin_country
+    constraints["citySequence"] = allocate_city_days(list(trip.cities), constraints["tripDays"])
+    constraints["routeContext"] = await _route_context(db, list(trip.cities))
 
     rules = (
         await db.scalars(
@@ -194,29 +248,60 @@ async def _create_adaptive_plan(
     context, constraints = await _planner_context(db, trip, user, body)
     candidates = await _load_candidate_places(db, trip.cities)
     ranked = rank_candidates(candidates, context["profile"], {**constraints, "recentFeedback": context["recentFeedback"]})
+    context["routeSkeleton"] = build_route_skeleton(
+        trip,
+        ranked,
+        {**constraints, "profile": context["profile"]},
+    )
     model_name = settings.openrouter_model if settings.llm_provider == "openrouter" else settings.anthropic_model
     fallback_used = False
     run_error: str | None = None
 
-    try:
-        raw_days = await asyncio.to_thread(generate_itinerary_days, trip, ranked, context)
-        days, validation = validate_generated_days(raw_days, trip, ranked, constraints)
-        if not validation["passed"]:
-            raise LLMProviderError("Model itinerary failed deterministic validation")
-    except Exception as exc:  # noqa: BLE001 — a grounded fallback keeps planning usable during provider outages.
+    # A single malformed model response should not immediately degrade to the
+    # generic fallback. Give the provider one repair pass with deterministic
+    # validator feedback; the fallback remains the final safety net.
+    validation = {"passed": False, "errors": ["planner did not return a valid plan"], "warnings": []}
+    raw_days: list[dict] = []
+    repair_attempts = 0
+    for attempt in range(2):
+        attempt_context = dict(context)
+        if attempt and validation.get("errors"):
+            attempt_context["validationFeedback"] = validation["errors"]
+        try:
+            raw_days = await asyncio.to_thread(generate_itinerary_days, trip, ranked, attempt_context)
+            days, validation = validate_generated_days(raw_days, trip, ranked, constraints)
+            repair_attempts = attempt
+            if validation["passed"]:
+                break
+            run_error = "; ".join(validation["errors"])[:1000]
+        except LLMNotConfiguredError as exc:
+            run_error = str(exc)[:1000]
+            break
+        except LLMProviderError as exc:
+            run_error = str(exc)[:1000]
+            if attempt == 1:
+                break
+
+    if not validation["passed"]:
         fallback_used = True
-        run_error = str(exc)[:1000]
         model_name = "grounded-deterministic-fallback"
         raw_days = fallback_days(trip, ranked, context["profile"], constraints)
         days, validation = validate_generated_days(raw_days, trip, ranked, constraints)
 
     days = _dated_days(days, trip)
+    used_place_ids = {
+        str(activity.get("placeId"))
+        for day in days
+        for activity in day.get("activities", [])
+        if activity.get("placeId")
+    }
     validation = {
         **validation,
         "fallbackUsed": fallback_used,
         "candidateCount": len(ranked),
         "model": model_name,
-        "promptVersion": "adaptive-v1",
+        "promptVersion": "adaptive-v2",
+        "repairAttempts": repair_attempts,
     }
     next_version = (await db.scalar(select(func.max(ItineraryPlan.version)).where(ItineraryPlan.trip_id == trip.id)) or 0) + 1
     plan = ItineraryPlan(
@@ -224,14 +309,18 @@ async def _create_adaptive_plan(
         version=next_version,
         status="draft" if validation["passed"] else "needs_staff_review",
         model=model_name,
-        prompt_version="adaptive-v1",
+        prompt_version="adaptive-v2",
         days=days,
         preferences_snapshot={
             **context["profile"],
             "_constraints": constraints,
             "_editorialRules": context["editorialRules"],
         },
-        source_claim_ids=[str(item["claimId"]) for item in ranked if item.get("claimId")],
+        source_claim_ids=[
+            str(item["claimId"])
+            for item in ranked
+            if item.get("claimId") and str(item.get("placeId")) in used_place_ids
+        ],
         validation=validation,
     )
     db.add(plan)
@@ -242,7 +331,7 @@ async def _create_adaptive_plan(
             trip_id=trip.id,
             plan_id=plan.id,
             model=model_name,
-            prompt_version="adaptive-v1",
+            prompt_version="adaptive-v2",
             retrieval_ids=[str(item["placeId"]) for item in ranked],
             validation_passed=bool(validation["passed"]),
             error=run_error,
@@ -408,7 +497,17 @@ async def record_plan_feedback(
     feedback = ItineraryFeedback(plan_id=plan.id, trip_id=trip.id, user_id=user.id, item_key=body.itemKey, action=body.action, reason=body.reason, replacement_place_id=body.replacementPlaceId, details=body.details, actor="user")
     db.add(feedback)
     await db.commit()
-    return {"id": str(feedback.id), "status": "recorded"}
+    response = {"id": str(feedback.id), "status": "recorded"}
+    if body.action in {"replace", "reschedule"} and body.details.get("autoReplan") is True:
+        snapshot = plan.preferences_snapshot or {}
+        replanning_body = AdaptivePlanCreate(
+            profile=TravelerProfileInput.model_validate({key: snapshot[key] for key in DEFAULT_PROFILE if key in snapshot}),
+            constraints=TripConstraintsInput.model_validate(snapshot.get("_constraints") or {}),
+        )
+        replanned = await _create_adaptive_plan(db, trip, user, replanning_body)
+        response["replannedPlanId"] = str(replanned.id)
+        response["status"] = "recorded_and_replanned"
+    return response
 
 
 @router.get("/planner/editorial-rules", response_model=list[EditorialRuleOut])

@@ -188,6 +188,7 @@ async def live_voice(websocket: WebSocket, ticket: str = Query(...)) -> None:
                     "intent": result.intent,
                     "policyTier": result.policy_tier,
                     "confidence": result.confidence,
+                    "latencyMs": latency_ms,
                     "citations": [KnowledgeCitationOut(**citation).model_dump(mode="json") for citation in result.citations],
                     "items": result.items,
                     "brain": "zentrip-shared-knowledge-gateway",

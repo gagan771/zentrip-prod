@@ -27,6 +27,15 @@ class KnowledgeOpsTests(unittest.TestCase):
         self.assertEqual(profile["operational"]["rating"]["stale"], False)
         self.assertNotIn("hours", profile["operational"])
 
+    def test_profile_marks_conflicting_approved_observations(self) -> None:
+        rows = [
+            SimpleNamespace(kind="hours", value={"schedule": "sunrise"}, status="approved", source_url="https://one.test", observed_at=date(2026, 8, 28), refresh_after=date(2026, 9, 4)),
+            SimpleNamespace(kind="hours", value={"schedule": "21:00"}, status="approved", source_url="https://two.test", observed_at=date(2026, 8, 27), refresh_after=date(2026, 9, 4)),
+        ]
+        profile = merge_operational_profile({}, rows, today=date(2026, 8, 28))
+        self.assertTrue(profile["operational"]["hours"]["conflict"])
+        self.assertEqual(profile["operational"]["hours"]["conflictCount"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

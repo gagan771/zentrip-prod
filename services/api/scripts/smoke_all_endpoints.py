@@ -266,6 +266,16 @@ def main() -> int:
         # Outcome endpoint is transport recommendations; skip if shape differs
         pass
 
+    call(
+        "compare.cabs",
+        "POST",
+        "/v1/compare/cabs",
+        expect=200,
+        headers=auth,
+        json_body={"pickup": "Current location", "drop": "Agra"},
+    )
+    call("compare.cabs_partners", "GET", "/v1/compare/cabs/partners", expect=200)
+
     call("knowledge.search", "GET", "/v1/knowledge/search", expect=200, params={"q": "Taj Mahal", "city": "Agra"})
     call("knowledge.payment_cash", "GET", "/v1/knowledge/search", expect=200, params={"q": "ATM cash"})
     call("knowledge.like_escape", "GET", "/v1/knowledge/search", expect=200, params={"q": "100%_scams"})

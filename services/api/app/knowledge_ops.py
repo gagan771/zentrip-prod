@@ -42,15 +42,25 @@ def merge_operational_profile(base: dict | None, rows: Iterable[object], *, toda
     today = today or date.today()
     profile = dict(base or {})
     operational = dict(profile.get("operational", {}))
-    for row in sorted(rows, key=lambda item: (item.kind, item.observed_at), reverse=True):
-        if row.status != "approved":
+    active_by_kind: dict[str, list[object]] = defaultdict(list)
+    for row in rows:
+        if row.status in ACTIVE_STATUSES:
+            active_by_kind[row.kind].append(row)
+    for kind, kind_rows in active_by_kind.items():
+        approved_rows = [item for item in kind_rows if item.status == "approved"]
+        if not approved_rows:
             continue
-        operational.setdefault(row.kind, {
+        approved_rows.sort(key=lambda item: item.observed_at, reverse=True)
+        row = approved_rows[0]
+        values = {json.dumps(item.value, sort_keys=True, separators=(",", ":")) for item in kind_rows}
+        operational.setdefault(kind, {
             **row.value,
-            "sourceUrl": row.source_url,
+            "sourceUrl": getattr(row, "source_url", None),
             "observedAt": row.observed_at.isoformat(),
             "refreshAfter": row.refresh_after.isoformat(),
             "stale": is_stale(row.refresh_after, today=today),
+            "conflict": len(values) > 1,
+            "conflictCount": len(values),
         })
     if operational:
         profile["operational"] = operational

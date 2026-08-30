@@ -109,6 +109,169 @@ def _slash_date(day: date) -> str:
     return day.strftime("%d/%m/%Y")
 
 
+# City-centre pins so a name-only last-mile search can prefill maps.
+# These are public landmarks, not a traveler's live GPS.
+_CITY_COORDS: dict[str, tuple[float, float]] = {
+    "delhi": (28.6139, 77.2090),
+    "new delhi": (28.6139, 77.2090),
+    "agra": (27.1767, 78.0081),
+    "jaipur": (26.9124, 75.7873),
+    "mumbai": (19.0760, 72.8777),
+    "bombay": (19.0760, 72.8777),
+    "bengaluru": (12.9716, 77.5946),
+    "bangalore": (12.9716, 77.5946),
+    "chennai": (13.0827, 80.2707),
+    "madras": (13.0827, 80.2707),
+    "kolkata": (22.5726, 88.3639),
+    "calcutta": (22.5726, 88.3639),
+    "hyderabad": (17.3850, 78.4867),
+    "pune": (18.5204, 73.8567),
+    "ahmedabad": (23.0225, 72.5714),
+    "goa": (15.4909, 73.8278),
+    "varanasi": (25.3176, 82.9739),
+    "rishikesh": (30.0869, 78.2676),
+    "haridwar": (29.9457, 78.1642),
+    "udaipur": (24.5854, 73.7125),
+    "jodhpur": (26.2389, 73.0243),
+    "amritsar": (31.6340, 74.8723),
+    "kochi": (9.9312, 76.2673),
+    "cochin": (9.9312, 76.2673),
+    "thiruvananthapuram": (8.5241, 76.9366),
+    "lucknow": (26.8467, 80.9462),
+    "chandigarh": (30.7333, 76.7794),
+    "indore": (22.7196, 75.8577),
+    "bhopal": (23.2599, 77.4126),
+    "nagpur": (21.1458, 79.0882),
+    "surat": (21.1702, 72.8311),
+    "vadodara": (22.3072, 73.1812),
+    "coimbatore": (11.0168, 76.9558),
+    "madurai": (9.9252, 78.1198),
+    "mysuru": (12.2958, 76.6394),
+    "mysore": (12.2958, 76.6394),
+    "manali": (32.2396, 77.1887),
+    "shimla": (31.1048, 77.1734),
+    "leh": (34.1526, 77.5771),
+    "srinagar": (34.0837, 74.7973),
+    "guwahati": (26.1445, 91.7362),
+    "patna": (25.5941, 85.1376),
+    "ranchi": (23.3441, 85.3096),
+    "bhubaneswar": (20.2961, 85.8245),
+    "visakhapatnam": (17.6868, 83.2185),
+    "vijayawada": (16.5062, 80.6480),
+}
+
+
+def city_coords(raw: str) -> tuple[float, float] | None:
+    key = " ".join(raw.strip().casefold().split())
+    return _CITY_COORDS.get(key)
+
+
+def _coord_pair(
+    lat: float | None,
+    lng: float | None,
+    name: str,
+) -> tuple[float, float] | None:
+    if lat is not None and lng is not None:
+        return (lat, lng)
+    return city_coords(name)
+
+
+def cab_handoffs(
+    pickup: str,
+    drop: str,
+    pickup_lat: float | None = None,
+    pickup_lng: float | None = None,
+    drop_lat: float | None = None,
+    drop_lng: float | None = None,
+) -> list[ProviderHandoff]:
+    """Official last-mile apps with pickup/drop prefilled. Never a live fare."""
+    src_name = pickup.strip() or "Current location"
+    dst_name = drop.strip() or "Drop"
+    origin = _coord_pair(pickup_lat, pickup_lng, src_name)
+    dest = _coord_pair(drop_lat, drop_lng, dst_name)
+    dest_q = quote_plus(dst_name)
+    pickup_q = quote_plus(src_name)
+
+    if dest:
+        dlat, dlng = dest
+        if origin:
+            plat, plng = origin
+            uber_url = (
+                "https://m.uber.com/ul/?action=setPickup"
+                f"&pickup[latitude]={plat}&pickup[longitude]={plng}"
+                f"&dropoff[latitude]={dlat}&dropoff[longitude]={dlng}"
+                f"&dropoff[nickname]={dest_q}"
+            )
+            ola_url = (
+                "https://book.olacabs.com/"
+                f"?lat={plat}&lng={plng}&drop_lat={dlat}&drop_lng={dlng}"
+            )
+            maps_url = (
+                "https://www.google.com/maps/dir/?api=1"
+                f"&origin={plat},{plng}&destination={dlat},{dlng}&travelmode=driving"
+            )
+        else:
+            uber_url = (
+                "https://m.uber.com/ul/?action=setPickup&pickup=my_location"
+                f"&dropoff[latitude]={dlat}&dropoff[longitude]={dlng}"
+                f"&dropoff[nickname]={dest_q}"
+            )
+            ola_url = f"https://book.olacabs.com/?drop_lat={dlat}&drop_lng={dlng}"
+            maps_url = (
+                "https://www.google.com/maps/dir/?api=1"
+                f"&origin=Current+Location&destination={dlat},{dlng}&travelmode=driving"
+            )
+    else:
+        uber_url = f"https://m.uber.com/go/product-selection?drop[nickname]={dest_q}"
+        ola_url = "https://book.olacabs.com/"
+        maps_origin = f"{origin[0]},{origin[1]}" if origin else pickup_q
+        maps_url = (
+            "https://www.google.com/maps/dir/?api=1"
+            f"&origin={maps_origin}&destination={dest_q}&travelmode=driving"
+        )
+
+    return [
+        ProviderHandoff(
+            key="uber",
+            display_name="Uber",
+            category="cab",
+            url=uber_url,
+            note=f"Confirm pickup and drop for {dst_name} on Uber. Zentrip does not take payment.",
+        ),
+        ProviderHandoff(
+            key="ola",
+            display_name="Ola",
+            category="cab",
+            url=ola_url,
+            note=f"Set the pin for {dst_name} on Ola. Live fare is only on their app.",
+        ),
+        ProviderHandoff(
+            key="rapido",
+            display_name="Rapido",
+            category="cab",
+            url="https://www.rapido.bike/",
+            note=f"Open Rapido and set drop to {dst_name}. Bike and auto quotes are only live in their app.",
+        ),
+        ProviderHandoff(
+            key="namma_yatri",
+            display_name="Namma Yatri",
+            category="cab",
+            url="https://nammayatri.in/",
+            note=(
+                f"Open Namma Yatri toward {dst_name}. This is an open-mobility network — "
+                "live quotes need a signed partner integration."
+            ),
+        ),
+        ProviderHandoff(
+            key="google_maps",
+            display_name="Google Maps",
+            category="cab",
+            url=maps_url,
+            note=f"Directions from {src_name} to {dst_name}. Use this if a ride app will not prefill.",
+        ),
+    ]
+
+
 def transport_handoffs(origin: str, destination: str, departure_date: date) -> list[ProviderHandoff]:
     src = resolve_city(origin)
     dst = resolve_city(destination)
@@ -272,29 +435,7 @@ def transport_handoffs(origin: str, destination: str, departure_date: date) -> l
             url="https://www.akasaair.com/",
             note=f"Search {src.iata} → {dst.iata} on {date_iso} on Akasa Air. Pay on the airline site.",
         ),
-        ProviderHandoff(
-            key="uber",
-            display_name="Uber",
-            category="cab",
-            url=(
-                "https://m.uber.com/go/product-selection"
-                f"?drop[nickname]={quote_plus(dst.name)}"
-            ),
-        ),
-        ProviderHandoff(
-            key="ola",
-            display_name="Ola",
-            category="cab",
-            url="https://book.olacabs.com/",
-            note=f"Set drop to {dst.name} on Ola. Zentrip does not take payment.",
-        ),
-        ProviderHandoff(
-            key="rapido",
-            display_name="Rapido",
-            category="cab",
-            url="https://www.rapido.bike/",
-            note=f"Book a bike or auto toward {dst.name} on Rapido.",
-        ),
+        *cab_handoffs(src.name, dst.name),
     ]
 
 

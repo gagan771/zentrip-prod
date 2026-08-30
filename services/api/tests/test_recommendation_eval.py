@@ -10,7 +10,7 @@ from scripts.evaluate_recommendations import _candidate_rows, _load_cases, evalu
 class RecommendationEvaluationTests(unittest.TestCase):
     def test_offline_evaluation_dataset_has_cases_and_coverage(self) -> None:
         report = evaluate(_load_cases(Path(__file__).parents[1] / "evals" / "recommendation_cases.jsonl"), _candidate_rows())
-        self.assertEqual(report["metrics"]["cases"], 15)
+        self.assertEqual(report["metrics"]["cases"], 200)
         self.assertEqual(report["metrics"]["catalogCandidates"], 52)
         self.assertGreaterEqual(report["metrics"]["catalogRegions"], 5)
         self.assertEqual(report["metrics"]["profileCompleteness"], 1.0)

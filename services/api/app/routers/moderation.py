@@ -11,6 +11,7 @@ from app.db import get_db
 from app.deps import get_current_staff
 from app.knowledge_learning import knowledge_improvement_report
 from app.knowledge_ops import operational_health
+from app.knowledge_refresh import compare_source_payload, source_fingerprint
 from app.models import (
     ExpertProfile,
     ExplorerProfile,
@@ -106,6 +107,7 @@ def _observation_out(row: tuple[KnowledgeObservation, KnowledgeEntity, Knowledge
         value=observation.value,
         observedAt=observation.observed_at,
         refreshAfter=observation.refresh_after,
+        fingerprint=observation.fingerprint,
         status=observation.status,
         reviewerId=observation.reviewer_id,
         reviewerNote=observation.reviewer_note,
@@ -207,8 +209,22 @@ async def create_knowledge_observation(
     observation = KnowledgeObservation(
         entity_id=entity.id, source_id=source.id, kind=body.kind, conflict_key=body.conflictKey,
         value=body.value, source_url=body.sourceUrl or source.source_url, observed_at=body.observedAt,
-        refresh_after=body.refreshAfter, status="needs_review",
+        refresh_after=body.refreshAfter, fingerprint=source_fingerprint(body.value), status="needs_review",
     )
+    previous = await db.scalar(
+        select(KnowledgeObservation)
+        .where(
+            KnowledgeObservation.entity_id == entity.id,
+            KnowledgeObservation.source_id == source.id,
+            KnowledgeObservation.kind == body.kind,
+            KnowledgeObservation.conflict_key == body.conflictKey,
+        )
+        .order_by(desc(KnowledgeObservation.updated_at))
+    )
+    if previous is not None:
+        change = compare_source_payload(previous.value, body.value)
+        if not change["changed"]:
+            observation.reviewer_note = "No source payload change detected; retained for freshness review."
     db.add(observation)
     await db.flush()
     await _audit(db, staff, "observation", observation.id, None, observation.status, "Created for operational-data review")

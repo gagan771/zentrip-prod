@@ -89,11 +89,24 @@ async def run_streaming_stt(
         await _run_sarvam(pcm_in, on_event)
         return
     if settings.sarvam_key_list:
-        await _run_sarvam(pcm_in, on_event)
-        return
+        try:
+            await _run_sarvam(pcm_in, on_event)
+            return
+        except Exception as exc:
+            # Auto mode is allowed to fail over once to Deepgram. Explicit
+            # provider selections remain strict so configuration mistakes are
+            # visible rather than silently changing vendors.
+            if not settings.deepgram_api_key.strip():
+                raise
+            logger.warning("zenny.live Sarvam failed; falling back to Deepgram: %s", type(exc).__name__)
     if settings.deepgram_api_key.strip():
-        await _run_deepgram(pcm_in, on_event)
-        return
+        try:
+            await _run_deepgram(pcm_in, on_event)
+            return
+        except Exception as exc:
+            await on_event(SttEvent("error", "Live speech recognition dropped. Try the call again."))
+            logger.warning("zenny.live Deepgram failed: %s", type(exc).__name__)
+            return
     raise RuntimeError("No streaming STT key configured. Set SARVAM_API_KEYS (or DEEPGRAM_API_KEY).")
 
 

@@ -26,6 +26,7 @@ jobs:
       - run: python -m compileall -q app evals scripts tests
       - run: python -m unittest discover -s tests -q
       - run: python -m scripts.evaluate_recommendations --min-coverage 0.95 --min-avoidance 0.90 --min-tag-precision 0.50 --min-season-fit 0.85 --min-accessibility-fit 0.75 --min-profile-completeness 0.95
+      - run: python -m scripts.evaluate_planner
 
   mobile:
     runs-on: ubuntu-latest

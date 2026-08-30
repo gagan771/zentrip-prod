@@ -69,7 +69,13 @@ async def add_trip_memory(
 
 
 def _preference_out(preference: UserPreference) -> UserPreferenceOut:
-    return UserPreferenceOut(id=preference.id, statement=preference.statement, createdAt=preference.created_at)
+    return UserPreferenceOut(
+        id=preference.id,
+        statement=preference.statement,
+        scope=preference.scope,
+        confidence=preference.confidence,
+        createdAt=preference.created_at,
+    )
 
 
 @router.get("/v1/preferences", response_model=list[UserPreferenceOut])
@@ -88,7 +94,7 @@ async def list_preferences(user: User = Depends(get_current_user), db: AsyncSess
 async def add_preference(
     body: UserPreferenceCreate, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> UserPreferenceOut:
-    preference = UserPreference(user_id=user.id, statement=body.statement)
+    preference = UserPreference(user_id=user.id, statement=body.statement, scope=body.scope, confidence=1.0)
     db.add(preference)
     await db.commit()
     return _preference_out(preference)

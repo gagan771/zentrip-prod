@@ -26,8 +26,12 @@ class Settings(BaseSettings):
     # Demo comparison fixtures are useful for local UX testing but must never be
     # enabled in a production booking decision.
     allow_demo_provider_data: bool = True
-    # The shared gateway is the source of truth for tap-to-talk voice answers.
-    # The direct Sarvam text agent remains available only as an explicit legacy mode.
+    # Authorized last-mile partner key. Empty keeps cab compare as official-app
+    # handoff only — never invents a live ₹ fare. A future Namma Yatri / Beckn
+    # adapter reads this; quotes stay off until that adapter is wired.
+    namma_yatri_api_key: str = ""
+    # Shared gateway is the Expo Go / tap-to-talk brain. LiveKit tokens still mint
+    # when LiveKit is configured — that is the spec voice path for web and native.
     voice_use_shared_gateway: bool = True
 
     @property
@@ -54,6 +58,8 @@ class Settings(BaseSettings):
             errors.append("ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic")
         if self.llm_provider not in {"openrouter", "anthropic"}:
             errors.append("LLM_PROVIDER must be openrouter or anthropic")
+        if self.embedding_api_url.strip() and not self.embedding_api_key.strip():
+            errors.append("EMBEDDING_API_KEY is required when EMBEDDING_API_URL is configured")
         return errors
 
     # Set this to the real OAuth client ID(s) from Google Cloud Console before
@@ -76,6 +82,12 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_site_url: str = ""
     openrouter_app_name: str = "Zentrip"
+    # Optional OpenAI-compatible embeddings endpoint. Leave empty to use the
+    # explainable local lexical/structured retrieval path.
+    embedding_api_url: str = ""
+    embedding_api_key: str = ""
+    embedding_model: str = "text-embedding-3-small"
+    embedding_timeout_seconds: float = 4.0
     # Camera-based landmark ID (07-historical-cultural-guide.md, full version) needs a
     # vision-capable model. openrouter_model above defaults to the free-model router,
     # which is not guaranteed to support image input — kept separate so a working text

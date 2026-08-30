@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MeadowBackground } from '../../components/zenny/MeadowBackground';
 import { ZennyAgent } from '../../components/zenny/ZennyAgent';
 import { useZennyCall, type CallPhase } from '../../lib/zenny-call';
+import { formatVoiceTripLine, getZennyVoiceContext } from '../../lib/zenny-voice';
 import { colors, radii, shadows, spacing, typography } from '../../lib/theme';
 import { useStore } from '../../store/useStore';
 
@@ -53,6 +54,8 @@ export default function CompanionScreen() {
   } = useZennyCall();
   const [elapsed, setElapsed] = useState(0);
   const [lastItems, setLastItems] = useState<string[]>([]);
+  const [tripLine, setTripLine] = useState('');
+  const [focusCity, setFocusCity] = useState('');
 
   const isGuest = !user || user.id === 'guest';
   const turn = turns.length > 0 ? turns[turns.length - 1] : null;
@@ -80,14 +83,34 @@ export default function CompanionScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      let cancelled = false;
+      if (!isGuest) {
+        void getZennyVoiceContext()
+          .then((ctx) => {
+            if (!cancelled) {
+              setTripLine(formatVoiceTripLine(ctx));
+              setFocusCity(ctx.focusCity || ctx.cities?.[0] || '');
+            }
+          })
+          .catch(() => {
+            if (!cancelled) {
+              setTripLine('');
+              setFocusCity('');
+            }
+          });
+      } else {
+        setTripLine('');
+        setFocusCity('');
+      }
       return () => {
+        cancelled = true;
         const items = turnRef.current?.items;
         if (items && items.length > 0) {
           setLastItems(items);
         }
         endCall();
       };
-    }, [endCall])
+    }, [endCall, isGuest])
   );
 
   function handleAgentPress() {
@@ -126,6 +149,7 @@ export default function CompanionScreen() {
           <View style={styles.nameBlock}>
             <Text style={styles.name}>Zenny</Text>
             <Text style={styles.role}>Your meadow companion</Text>
+            {tripLine && !inCall ? <Text style={styles.tripLine}>{tripLine}</Text> : null}
           </View>
           {inCall ? (
             <View style={styles.livePill}>
@@ -134,7 +158,7 @@ export default function CompanionScreen() {
             </View>
           ) : (
             <View style={styles.idlePill}>
-              <Text style={styles.idleText}>LIVE VOICE</Text>
+              <Text style={styles.idleText}>{canDuplex ? 'LIVE VOICE' : 'TAP TO TALK'}</Text>
             </View>
           )}
         </View>
@@ -192,6 +216,22 @@ export default function CompanionScreen() {
                 </View>
               ) : null}
             </View>
+          ) : null}
+
+          {focusCity && !inCall && !isGuest ? (
+            <Pressable
+              style={styles.groceryChip}
+              onPress={() =>
+                router.push({
+                  pathname: '/(tabs)/compare',
+                  params: { pickup: 'Current location', drop: focusCity, tab: 'cabs' },
+                })
+              }
+            >
+              <Ionicons name="car-outline" size={16} color={colors.white} />
+              <Text style={styles.groceryText}>Get there · {focusCity}</Text>
+              <Ionicons name="arrow-forward" size={14} color={colors.white} />
+            </Pressable>
           ) : null}
 
           {groceryItems.length > 0 ? (
@@ -282,6 +322,13 @@ const styles = StyleSheet.create({
     color: colors.sageDark,
     fontSize: typography.fontSize.caption,
     fontWeight: '600',
+  },
+  tripLine: {
+    color: colors.ink,
+    fontSize: typography.fontSize.micro,
+    fontWeight: '700',
+    maxWidth: 220,
+    marginTop: 4,
   },
   livePill: {
     flexDirection: 'row',

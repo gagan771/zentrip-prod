@@ -261,6 +261,7 @@ async def identify(
             .where(
                 KnowledgeClaim.entity_id == matched_entity.id,
                 KnowledgeClaim.verification_status == "published",
+                KnowledgeClaim.confidence.in_(["verified", "estimated"]),
                 KnowledgeSource.status == "active",
             )
             .order_by(KnowledgeClaim.last_verified.desc())

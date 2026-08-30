@@ -1,10 +1,13 @@
 import uuid
 from datetime import date
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.cab_service import CabSearchInput, partnership_programs, search_cabs
 from app.comparison_service import (
     ScoredResult,
     ScoredStayResult,
@@ -21,6 +24,9 @@ from app.models import Outcome, ProviderObservation, Recommendation, StayObserva
 from app.provider_handoff import handoff_to_dict, stay_handoffs, transport_handoffs
 from app.social_service import stay_context
 from app.schemas import (
+    CabPartnerOut,
+    CabSearchRequest,
+    CabSearchResponse,
     CompareResultOut,
     CompareSearchRequest,
     CompareSearchResponse,
@@ -32,6 +38,9 @@ from app.schemas import (
     StaySearchResponse,
     StayScoreComponentOut,
 )
+from app.trip_context import format_trip_context, load_voice_trip, load_voice_trip_days
+
+_CAB_APPLY_PAGE = Path(__file__).resolve().parents[1] / "static" / "cab-partner-apply.html"
 
 router = APIRouter(prefix="/v1/compare", tags=["compare"])
 
@@ -331,6 +340,52 @@ async def list_transport_handoffs(
 ) -> list[ProviderHandoffOut]:
     del user
     return [ProviderHandoffOut(**handoff_to_dict(item)) for item in transport_handoffs(origin, destination, departureDate)]
+
+
+@router.post("/cabs", response_model=CabSearchResponse)
+async def search_last_mile_cabs(
+    body: CabSearchRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CabSearchResponse:
+    drop = body.drop.strip()
+    if body.tripId is not None:
+        trip = await load_voice_trip(db, user.id, body.tripId)
+        if trip is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trip not found")
+        if not drop:
+            days = await load_voice_trip_days(db, trip.id)
+            ctx = format_trip_context(trip, days)
+            cities = [str(city) for city in (ctx.get("cities") or []) if city]
+            drop = str(ctx.get("focusCity") or (cities[0] if cities else "") or "").strip()
+    if len(drop) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="drop is required — type a place, or pass tripId so today’s city can fill it.",
+        )
+    payload = search_cabs(
+        CabSearchInput(
+            pickup=body.pickup.strip() or "Current location",
+            drop=drop,
+            pickup_lat=body.pickupLat,
+            pickup_lng=body.pickupLng,
+            drop_lat=body.dropLat,
+            drop_lng=body.dropLng,
+        )
+    )
+    return CabSearchResponse(**payload)
+
+
+@router.get("/cabs/partners", response_model=list[CabPartnerOut])
+async def list_cab_partners() -> list[CabPartnerOut]:
+    return [CabPartnerOut(**item) for item in partnership_programs()]
+
+
+@router.get("/cabs/apply", response_class=HTMLResponse)
+async def cab_partner_apply_page() -> FileResponse:
+    if not _CAB_APPLY_PAGE.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Partner apply page is missing.")
+    return FileResponse(_CAB_APPLY_PAGE, media_type="text/html; charset=utf-8")
 
 
 @router.get("/stays/handoffs", response_model=list[ProviderHandoffOut])

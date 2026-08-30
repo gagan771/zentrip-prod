@@ -16,8 +16,16 @@ def livekit_ready() -> bool:
     return bool(settings.livekit_url.strip() and settings.livekit_api_key.strip() and settings.livekit_api_secret.strip())
 
 
-def mint_livekit_token(*, identity: str, name: str, room: str, ttl_seconds: int = 900) -> str:
+def mint_livekit_token(
+    *,
+    identity: str,
+    name: str,
+    room: str,
+    metadata: str = "",
+    ttl_seconds: int = 900,
+) -> str:
     now = int(time.time())
+    trip = (metadata or "")[:2000]
     payload = {
         "iss": settings.livekit_api_key.strip(),
         "sub": identity[:64],
@@ -25,13 +33,19 @@ def mint_livekit_token(*, identity: str, name: str, room: str, ttl_seconds: int 
         "nbf": now - 5,
         "exp": now + ttl_seconds,
         "jti": uuid.uuid4().hex,
+        "metadata": trip,
         "video": {
             "roomJoin": True,
             "room": room,
+            "roomCreate": True,
             "canPublish": True,
             "canSubscribe": True,
             "canPublishData": True,
         },
-        "roomConfig": {"agents": [{"agentName": ZENNY_AGENT_NAME}]},
+        "roomConfig": {
+            "name": room,
+            "metadata": trip,
+            "agents": [{"agentName": ZENNY_AGENT_NAME, "metadata": trip}],
+        },
     }
     return jwt.encode(payload, settings.livekit_api_secret.strip(), algorithm="HS256")

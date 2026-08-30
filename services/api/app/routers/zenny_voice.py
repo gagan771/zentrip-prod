@@ -6,6 +6,7 @@ returns the text that the phone's native TTS speaks aloud.
 """
 
 import uuid
+import time
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +33,7 @@ async def voice_turn(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ZennyVoiceTurnResponse:
+    started_at = time.perf_counter()
     parsed_trip: uuid.UUID | None = None
     if trip_id:
         try:
@@ -92,6 +94,7 @@ async def voice_turn(
                 confidence="verified",
                 citations=[],
                 items=[],
+                latencyMs=int((time.perf_counter() - started_at) * 1000),
                 brain="sarvam-voice-agent",
             )
         except VoiceAgentError as exc:
@@ -112,5 +115,6 @@ async def voice_turn(
         confidence=result.confidence,
         citations=[KnowledgeCitationOut(**citation) for citation in result.citations],
         items=result.items,
+        latencyMs=int((time.perf_counter() - started_at) * 1000),
         brain="zentrip-shared-knowledge-gateway",
     )

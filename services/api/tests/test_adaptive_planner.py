@@ -4,9 +4,11 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from app.adaptive_planner import (
+    build_route_skeleton,
     fallback_days,
     merge_profile,
     rank_candidates,
+    rerank_candidates,
     score_candidate,
     select_diverse_recommendations,
     validate_generated_days,
@@ -72,6 +74,30 @@ class AdaptivePlannerTests(unittest.TestCase):
         profile = merge_profile({}, ["Suggest nature in Northeast India"])
         self.assertEqual(profile["preferredRegions"], ["North East"])
 
+    def test_hinglish_preferences_are_normalized(self) -> None:
+        profile = merge_profile({}, ["mandir aur khana, pahad nahi"])
+        self.assertIn("spiritual", profile["interests"])
+        self.assertIn("food", profile["interests"])
+        self.assertIn("adventure", profile["avoidInterests"])
+
+    def test_common_city_aliases_match_knowledge_city_names(self) -> None:
+        candidate = {"placeId": "mumbai-place", "name": "Gateway", "city": "Mumbai", "fact": "harbour", "experienceProfile": {}}
+        trip = SimpleNamespace(start_date=date(2026, 10, 1), end_date=date(2026, 10, 1), cities=["Bombay"])
+        days = fallback_days(trip, [candidate], {}, {"maxActivitiesPerDay": 1})
+        _, validation = validate_generated_days(days, trip, [candidate], {"maxActivitiesPerDay": 1})
+        self.assertTrue(validation["passed"])
+
+    def test_route_skeleton_is_contiguous_and_uses_ranked_candidates(self) -> None:
+        trip = SimpleNamespace(start_date=date(2026, 10, 1), end_date=date(2026, 10, 4), cities=["Jaipur", "Agra"])
+        skeleton = build_route_skeleton(
+            trip,
+            self.candidates,
+            {"maxActivitiesPerDay": 2, "maxDailyTravelMinutes": 180, "profile": {"pace": "balanced"}},
+        )
+        self.assertEqual([day["city"] for day in skeleton], ["Jaipur", "Jaipur", "Agra", "Agra"])
+        self.assertEqual(skeleton[0]["candidatePlaceIds"], [self.candidates[0]["placeId"], self.candidates[1]["placeId"]])
+        self.assertEqual(skeleton[2]["candidatePlaceIds"], [self.candidates[2]["placeId"]])
+
     def test_region_is_hard_when_catalog_can_satisfy_it(self) -> None:
         candidates = [
             {"name": "North place", "city": "Delhi", "fact": "heritage", "experienceProfile": {"destinationProfile": {"region": "North"}}},
@@ -129,6 +155,106 @@ class AdaptivePlannerTests(unittest.TestCase):
         self.assertFalse(validation["passed"])
         self.assertTrue(any("unknown place" in error for error in validation["errors"]))
         self.assertTrue(days)
+
+    def test_validation_rejects_city_out_of_requested_route_order(self) -> None:
+        days, validation = validate_generated_days(
+            [
+                {"day": 1, "city": "Agra", "activities": []},
+                {"day": 2, "city": "Jaipur", "activities": []},
+            ],
+            self.trip,
+            self.candidates,
+            {"maxActivitiesPerDay": 3},
+        )
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("out of route order" in error for error in validation["errors"]))
+
+    def test_validation_enforces_daily_travel_budget(self) -> None:
+        days, validation = validate_generated_days(
+            [
+                {"day": 1, "city": "Jaipur", "activities": [
+                    {"startTime": "09:00", "placeId": self.candidates[0]["placeId"], "durationMinutes": 60, "travelMinutes": 121, "reason": "history", "bookingRequired": False},
+                ]},
+                {"day": 2, "city": "Agra", "activities": []},
+            ],
+            self.trip,
+            self.candidates,
+            {"maxActivitiesPerDay": 3, "maxDailyTravelMinutes": 120},
+        )
+        self.assertFalse(validation["passed"])
+        self.assertIn("day 1 exceeds max daily travel time", validation["errors"])
+
+    def test_validation_enforces_reviewed_hours_and_daily_budget(self) -> None:
+        candidate = {
+            **self.candidates[0],
+            "experienceProfile": {
+                **self.candidates[0]["experienceProfile"],
+                "estimatedCostINR": 1500,
+                "operational": {"hours": {"schedule": "10:00 to 17:00", "weeklyClosure": []}},
+            },
+        }
+        _days, validation = validate_generated_days(
+            [
+                {"day": 1, "city": "Jaipur", "activities": [{
+                    "startTime": "09:00", "placeId": candidate["placeId"], "durationMinutes": 60,
+                    "reason": "historic fort",
+                }]},
+                {"day": 2, "city": "Agra", "activities": []},
+            ],
+            self.trip,
+            [candidate, self.candidates[1], self.candidates[2]],
+            {"maxActivitiesPerDay": 3, "dailyBudget": 1000},
+        )
+        self.assertIn("Amber Fort is outside reviewed opening hours on day 1", validation["errors"])
+        self.assertIn("day 1 exceeds daily budget", validation["errors"])
+
+    def test_reranker_preserves_planner_fit_and_adds_query_relevance(self) -> None:
+        ranked = rank_candidates(self.candidates, {"interests": ["history"]}, {})
+        reranked = rerank_candidates(ranked, "historic fort in Agra")
+        self.assertEqual(reranked[0]["name"], "Agra Fort")
+        self.assertIn("queryRelevance", reranked[0]["scoreBreakdown"])
+
+    def test_validation_restores_reviewed_booking_requirement(self) -> None:
+        candidate = {**self.candidates[0], "experienceProfile": {**self.candidates[0]["experienceProfile"], "bookingRequired": True}}
+        days, validation = validate_generated_days(
+            [
+                {"day": 1, "city": "Jaipur", "activities": [{"startTime": "09:00", "placeId": candidate["placeId"], "durationMinutes": 60, "reason": "history", "bookingRequired": False}]},
+                {"day": 2, "city": "Agra", "activities": []},
+            ],
+            self.trip,
+            [candidate, self.candidates[1], self.candidates[2]],
+            {"maxActivitiesPerDay": 3},
+        )
+        self.assertTrue(validation["passed"])
+        self.assertTrue(days[0]["activities"][0]["bookingRequired"])
+
+    def test_validation_carries_activity_provenance(self) -> None:
+        candidate = {
+            **self.candidates[0],
+            "claimId": "claim-amber",
+            "sourceUrl": "https://example.test/amber",
+            "lastVerified": "2026-09-01",
+            "confidence": "verified",
+        }
+        days, validation = validate_generated_days(
+            [
+                {"day": 1, "city": "Jaipur", "activities": [{
+                    "startTime": "09:00",
+                    "placeId": candidate["placeId"],
+                    "durationMinutes": 60,
+                    "reason": "historic fort",
+                }]},
+                {"day": 2, "city": "Agra", "activities": []},
+            ],
+            self.trip,
+            [candidate, self.candidates[1], self.candidates[2]],
+            {"maxActivitiesPerDay": 3},
+        )
+        self.assertTrue(validation["passed"])
+        activity = days[0]["activities"][0]
+        self.assertEqual(activity["sourceClaimId"], "claim-amber")
+        self.assertEqual(activity["sourceUrl"], "https://example.test/amber")
+        self.assertEqual(activity["confidence"], "verified")
 
     def test_validation_replaces_ungrounded_activity_reason(self) -> None:
         days, validation = validate_generated_days(

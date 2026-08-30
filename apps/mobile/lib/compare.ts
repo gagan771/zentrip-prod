@@ -114,3 +114,57 @@ export function listStayHandoffs(input: { city: string; checkIn: string; checkOu
   });
   return apiRequest<ProviderHandoff[]>(`/v1/compare/stays/handoffs?${params.toString()}`);
 }
+
+export type CabOption = {
+  provider: string;
+  productHint: string;
+  provenance: 'handoff' | 'live' | string;
+  fareInr: number | null;
+  etaMinutes: number | null;
+  url: string;
+  note: string;
+  smartPickupHint: string | null;
+};
+
+export type CabPartner = {
+  key: string;
+  name: string;
+  status: string;
+  applyUrl: string;
+  docsUrl: string;
+  why: string;
+  whatToSend: string;
+};
+
+export type CabSearchResponse = {
+  pickup: string;
+  drop: string;
+  pickupLat: number | null;
+  pickupLng: number | null;
+  dropLat: number | null;
+  dropLng: number | null;
+  isLive: boolean;
+  message: string;
+  smartPickupHint: string;
+  options: CabOption[];
+  handoffs: ProviderHandoff[];
+  partners: CabPartner[];
+};
+
+export type CabSearchInput = {
+  pickup: string;
+  drop: string;
+  pickupLat?: number;
+  pickupLng?: number;
+  dropLat?: number;
+  dropLng?: number;
+  tripId?: string;
+};
+
+export function searchCabs(input: CabSearchInput): Promise<CabSearchResponse> {
+  return apiRequest<CabSearchResponse>('/v1/compare/cabs', { method: 'POST', body: input });
+}
+
+export function listCabPartners(): Promise<CabPartner[]> {
+  return apiRequest<CabPartner[]>('/v1/compare/cabs/partners');
+}

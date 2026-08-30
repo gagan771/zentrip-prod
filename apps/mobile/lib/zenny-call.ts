@@ -167,7 +167,7 @@ export function useZennyCall() {
     if (!permission.granted) throw new Error('Microphone permission is needed to talk to Zenny.');
     await setAudioModeAsync(CALL_AUDIO_MODE);
     const sessionId = await getVoiceSessionId();
-    const session = await createZennyLivekitToken(sessionId);
+    const session = await createZennyLivekitToken(sessionId, tripId);
     const leave = await connectLivekitRoom(session.url, session.token);
     leaveLivekitRef.current = leave;
     duplexRef.current = true;
@@ -175,7 +175,7 @@ export function useZennyCall() {
     setMode('duplex');
     startedAt.current = Date.now();
     updatePhase('live');
-  }, [updatePhase]);
+  }, [tripId, updatePhase]);
 
   const startDuplex = useCallback(async () => {
     setError(null);
@@ -302,7 +302,9 @@ export function useZennyCall() {
     const permission = await requestRecordingPermissionsAsync();
     if (!permission.granted) throw new Error('Microphone permission is needed to talk to Zenny.');
     await setAudioModeAsync(CALL_AUDIO_MODE);
-    const session = await createZennyLiveSession(tripId, 'deepgram');
+    // Let the API select the configured realtime STT provider. Local dev is
+    // commonly configured with Sarvam rather than Deepgram.
+    const session = await createZennyLiveSession(tripId, 'auto');
     const socket = new WebSocket(zennyLiveSocketUrl(session));
     socket.binaryType = 'arraybuffer';
     socketRef.current = socket;
@@ -494,11 +496,11 @@ export function useZennyCall() {
     if (busy.current) return;
     busy.current = true;
     try {
-      if (knowledgeMode === 'shared_gateway' && deepgramReady && pcmStreamingSupported()) {
+      if (knowledgeMode === 'shared_gateway' && liveSttReady && pcmStreamingSupported()) {
         await startDeepgramLive();
         return;
       }
-      if (knowledgeMode !== 'shared_gateway' && livekitReady && livekitNativeAvailable()) {
+      if (livekitReady && livekitNativeAvailable()) {
         await startLivekit();
         return;
       }
@@ -511,7 +513,7 @@ export function useZennyCall() {
       await teardownDuplex();
       updatePhase('idle');
       const raw = caught instanceof Error ? caught.message : 'Unable to open the microphone.';
-      if ((knowledgeMode === 'shared_gateway' && deepgramReady) || (knowledgeMode !== 'shared_gateway' && (liveSttReady || livekitReady))) {
+      if (livekitReady || (knowledgeMode === 'shared_gateway' && liveSttReady) || (knowledgeMode !== 'shared_gateway' && liveSttReady)) {
         setError(`${raw} Falling back to tap-to-talk.`);
         try {
           await startListening();
@@ -600,8 +602,8 @@ export function useZennyCall() {
     partial,
     inCall: phase !== 'idle',
     canDuplex:
-      (knowledgeMode === 'shared_gateway' && deepgramReady && pcmStreamingSupported()) ||
-      (knowledgeMode !== 'shared_gateway' && livekitReady && livekitNativeAvailable()) ||
+      (livekitReady && livekitNativeAvailable()) ||
+      (knowledgeMode === 'shared_gateway' && liveSttReady && pcmStreamingSupported()) ||
       (knowledgeMode !== 'shared_gateway' && agentReady && pcmStreamingSupported()),
     startCall,
     endCall,
